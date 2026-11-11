@@ -1,0 +1,148 @@
+import userRepo from '../../database/userRepo.js';
+import inventoryRepo from '../../database/inventoryRepo.js';
+import { handleDeath } from '../../utils/deathEngine.js';
+import { formatCoins, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
+
+export const rob = {
+  name: 'rob',
+  aliases: [],
+  description: 'Pickpocket another user in the group chat for a percentage of their wallet',
+  cooldown: 120,
+
+  async execute(ctx) {
+    if (ctx.chat.type === 'private') {
+      return ctx.reply('⚔️ You can only rob other players inside a group chat!');
+    }
+
+    const callerId = ctx.from.id;
+    const caller = userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
+
+    // 1. Identify Target User
+    let target = null;
+
+    if (ctx.message?.reply_to_message?.from) {
+      const replied = ctx.message.reply_to_message.from;
+      target = userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+    } else {
+      const args = ctx.message.text.trim().split(/\s+/).slice(1);
+      const usernameArg = args[0];
+      if (usernameArg) {
+        target = userRepo.getUserByUsername(usernameArg);
+      }
+    }
+
+    if (!target) {
+      return ctx.reply(
+        `🥷 <b>Robbery Attempt</b>\n` +
+        `Usage: Reply to a player's message with <code>/rob</code> or type <code>/rob @username</code>.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    if (target.user_id === callerId) {
+      return ctx.reply('🤡 You cannot rob yourself, silly.');
+    }
+
+    // 2. Passive Mode Checks
+    if (caller.passive_mode === 1) {
+      return ctx.reply('🛡️ You have <b>Passive Mode</b> enabled! You cannot rob others while protected. Disable it in <code>/profile</code>.', { parse_mode: 'HTML' });
+    }
+    if (target.passive_mode === 1) {
+      return ctx.reply(`🛡️ <b>${sanitizeHtml(target.first_name)}</b> has <b>Passive Mode</b> enabled and is immune to robbery!`, { parse_mode: 'HTML' });
+    }
+
+    // 3. Minimum Wallet Balance Checks
+    if (caller.wallet < 2000) {
+      return ctx.reply('💸 You must have at least <b>🪙 2,000</b> in your wallet to cover legal fines if caught!', { parse_mode: 'HTML' });
+    }
+    if (target.wallet < 1000) {
+      return ctx.reply(`🤷 <b>${sanitizeHtml(target.first_name)}</b> is too broke to rob! They have less than 🪙 1,000 in their wallet.`, { parse_mode: 'HTML' });
+    }
+
+    // 4. Check Defenses: LANDMINE
+    if (inventoryRepo.hasBuff(target.user_id, 'landmine')) {
+      inventoryRepo.removeBuff(target.user_id, 'landmine');
+      // 50% chance it explodes
+      if (Math.random() < 0.50) {
+        const fine = Math.min(caller.wallet, 2000);
+        userRepo.updateWallet(callerId, -fine);
+        userRepo.updateWallet(target.user_id, fine);
+
+        const deathRes = await handleDeath(ctx, callerId, `stepping on a live Landmine armed by ${target.first_name}`);
+        const deathNotice = deathRes.survived
+          ? `🛟 <b>BOOOM!</b> You tripped ${target.first_name}'s 💣 <b>Landmine</b>, but your 🛟 <b>Life Saver</b> consumed itself to save your life! You still paid <b>${formatCoins(fine)}</b> in damages.`
+          : `💥 <b>BOOOOM!</b> You crept up behind ${target.first_name} and stepped directly on their concealed 💣 <b>Landmine</b>!\n` +
+            `The explosion blew you away! Paid <b>${formatCoins(fine)}</b> hazard fine.\n\n` + deathRes.message;
+
+        return ctx.reply(deathNotice, { parse_mode: 'HTML' });
+      }
+    }
+
+    // 5. Check Defenses: PADLOCK
+    if (inventoryRepo.hasBuff(target.user_id, 'padlock')) {
+      inventoryRepo.removeBuff(target.user_id, 'padlock');
+      const fine = Math.min(caller.wallet, 1500);
+      userRepo.updateWallet(callerId, -fine);
+      userRepo.updateWallet(target.user_id, fine);
+
+      return ctx.reply(
+        `🔒 <b>CLANK!</b> You reached for <b>${sanitizeHtml(target.first_name)}</b>'s wallet, but your hands hit a heavy locked <b>Padlock</b>!\n` +
+        `The padlock broke, alerting the victim! You dropped <b>${formatCoins(fine)}</b> in your clumsy escape.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // 6. Roll Robbery Probability (40% success rate)
+    const roll = Math.random();
+    const isSuccess = roll < 0.40;
+
+    if (!isSuccess) {
+      // Caught! Pay 25% of wallet (max 10,000)
+      const fine = Math.min(10000, Math.floor(caller.wallet * 0.25));
+      userRepo.updateWallet(callerId, -fine);
+      userRepo.updateWallet(target.user_id, fine);
+
+      return ctx.reply(
+        `🚨 <b>CAUGHT RED-HANDED!</b>\n` +
+        `You were spotted trying to pickpocket <b>${sanitizeHtml(target.first_name)}</b>!\n` +
+        `You tripped and had to pay them <b>${formatCoins(fine)}</b> in compensation.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // Success! Determine steal tier
+    const stealTierRoll = Math.random();
+    let stealPercentage = 0.15; // default 15%
+
+    if (stealTierRoll < 0.70) {
+      // Small steal: 10%–25%
+      stealPercentage = randomBetween(10, 25) / 100;
+    } else if (stealTierRoll < 0.95) {
+      // Big steal: 26%–50%
+      stealPercentage = randomBetween(26, 50) / 100;
+    } else {
+      // Jackal roll: 80%–100%
+      stealPercentage = randomBetween(80, 100) / 100;
+    }
+
+    const stolenAmount = Math.max(1, Math.floor(target.wallet * stealPercentage));
+    userRepo.updateWallet(target.user_id, -stolenAmount);
+    userRepo.updateWallet(callerId, stolenAmount);
+
+    let heistFlavor = 'You slickly slid your hands into their pocket';
+    if (stealPercentage >= 0.80) {
+      heistFlavor = '💰 <b>JACKPOT ROBBERY!</b> You stripped their entire wallet clean';
+    } else if (stealPercentage >= 0.26) {
+      heistFlavor = '🏃 <b>FAT HEIST!</b> You snatched a hefty wad of cash';
+    }
+
+    return ctx.reply(
+      `🥷 <b>Robbery Successful!</b>\n` +
+      `${heistFlavor} and stole <b>${formatCoins(stolenAmount)}</b> from <b>${sanitizeHtml(target.first_name)}</b>!\n\n` +
+      `👛 <b>Your Wallet:</b> ${formatCoins(caller.wallet + stolenAmount)}`,
+      { parse_mode: 'HTML' }
+    );
+  }
+};
+
+export default rob;

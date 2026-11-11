@@ -1,0 +1,109 @@
+import userRepo from '../../database/userRepo.js';
+import { addXp } from '../../utils/levelEngine.js';
+import { formatCoins, pickRandom } from '../../utils/formatters.js';
+
+const SLOT_SYMBOLS = ['🍒', '🍋', '🍇', '🔔', '💎', '🐸'];
+
+export const slots = {
+  name: 'slots',
+  aliases: [],
+  description: 'Spin the reels on the TeleMemer slot machine for up to 25x Pepe Jackpot',
+  cooldown: 5,
+
+  async execute(ctx) {
+    const userId = ctx.from.id;
+    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+
+    const args = ctx.message.text.trim().split(/\s+/).slice(1);
+    const betInput = args[0]?.toLowerCase();
+
+    if (!betInput) {
+      return ctx.reply(
+        `🎰 <b>TeleMemer Casino Slots</b>\n` +
+        `Usage: <code>/slots &lt;bet&gt;</code> or <code>/slots max</code> (Max: 🪙 50,000)\n\n` +
+        `<b>Payout Multipliers:</b>\n` +
+        `• 🐸 🐸 🐸 = <b>25x JACKPOT!</b>\n` +
+        `• 💎 💎 💎 = <b>10x Mega Win</b>\n` +
+        `• 3 Matching = <b>4x Win</b>\n` +
+        `• 2 Matching = <b>1.5x Return</b>\n\n` +
+        `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    let bet = 0;
+    if (betInput === 'all' || betInput === 'max') {
+      bet = Math.min(50000, user.wallet);
+    } else {
+      const parsed = parseInt(betInput.replace(/[,kKmM]/g, ''), 10);
+      if (isNaN(parsed) || parsed <= 0) {
+        return ctx.reply('❌ Please enter a valid positive number for your bet.');
+      }
+      bet = parsed;
+    }
+
+    if (bet < 100) {
+      return ctx.reply('❌ Minimum slot bet is 🪙 100.');
+    }
+    if (bet > 50000) {
+      return ctx.reply('❌ Maximum slot bet is 🪙 50,000.');
+    }
+    if (user.wallet < bet) {
+      return ctx.reply(`💸 You don't have enough coins in your wallet! (Wallet: ${formatCoins(user.wallet)})`);
+    }
+
+    // Deduct bet immediately
+    userRepo.updateWallet(userId, -bet);
+
+    // Spin 3 symbols
+    const s1 = pickRandom(SLOT_SYMBOLS);
+    const s2 = pickRandom(SLOT_SYMBOLS);
+    const s3 = pickRandom(SLOT_SYMBOLS);
+
+    let multiplier = 0;
+    let title = '';
+
+    // Check 3 matching
+    if (s1 === s2 && s2 === s3) {
+      if (s1 === '🐸') {
+        multiplier = 25;
+        title = '🐸 <b>PEPE JACKPOT! 25X MULTIPLIER!</b> 🌟';
+      } else if (s1 === '💎') {
+        multiplier = 10;
+        title = '💎 <b>DIAMOND SHINE! 10X MEGA WIN!</b> 💎';
+      } else {
+        multiplier = 4;
+        title = '🎉 <b>TRIPLE MATCH! 4X WIN!</b>';
+      }
+    } else if (s1 === s2 || s2 === s3 || s1 === s3) {
+      // 2 matching
+      multiplier = 1.5;
+      title = '✨ <b>DOUBLE MATCH! 1.5X PAYOUT!</b>';
+    } else {
+      multiplier = 0;
+      title = '💀 <b>NO MATCH! YOU LOST!</b>';
+    }
+
+    const payout = Math.floor(bet * multiplier);
+    if (payout > 0) {
+      userRepo.updateWallet(userId, payout);
+    }
+
+    const xpRes = addXp(userId, multiplier > 0 ? 25 : 10);
+    const updatedWallet = userRepo.getUser(userId)?.wallet || 0;
+
+    const display = `🎰 <b>SLOT REELS SPINNING...</b>\n\n` +
+      `╔═══════════════╗\n` +
+      `║   <b>${s1}  |  ${s2}  |  ${s3}</b>   ║\n` +
+      `╚═══════════════╝\n\n` +
+      `${title}\n` +
+      (payout > 0 ? `💰 <b>Payout:</b> +${formatCoins(payout)}\n` : `💸 <b>Lost:</b> ${formatCoins(bet)}\n`) +
+      `👛 <b>New Wallet:</b> ${formatCoins(updatedWallet)}\n` +
+      `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
+      (xpRes.message ? `\n${xpRes.message}` : '');
+
+    return ctx.reply(display, { parse_mode: 'HTML' });
+  }
+};
+
+export default slots;

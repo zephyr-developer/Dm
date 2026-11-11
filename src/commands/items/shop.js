@@ -1,0 +1,133 @@
+import { InlineKeyboard } from 'grammy';
+import userRepo from '../../database/userRepo.js';
+import inventoryRepo from '../../database/inventoryRepo.js';
+import { getBuyableItems, getItem } from '../../config/items.js';
+import { formatCoins } from '../../utils/formatters.js';
+
+const ITEMS_PER_PAGE = 4;
+
+function buildShopPage(userId, page = 1) {
+  const buyable = getBuyableItems();
+  const totalPages = Math.ceil(buyable.length / ITEMS_PER_PAGE) || 1;
+  const currentPage = Math.max(1, Math.min(totalPages, page));
+
+  const startIdx = (currentPage - 1) * ITEMS_PER_PAGE;
+  const pageItems = buyable.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+
+  const user = userRepo.getUser(userId);
+  const walletCoins = user ? user.wallet : 0;
+
+  let text = `🛍️ <b>TeleMemer Black Market & Equipment Shop</b>\n` +
+    `👛 <b>Your Wallet:</b> ${formatCoins(walletCoins)} | 📄 <b>Page ${currentPage} / ${totalPages}</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  pageItems.forEach(item => {
+    const userQuantity = inventoryRepo.getItem(userId, item.id);
+    text += `${item.emoji} <b>${item.name}</b> (<code>${item.id}</code>)\n` +
+      `• <b>Price:</b> ${formatCoins(item.buyPrice)} | Owned: <b>${userQuantity}</b>\n` +
+      `• <i>${item.description}</i>\n\n`;
+  });
+
+  text += `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `👉 <i>To buy in bulk, run:</i> <code>/buy &lt;item&gt; [amount]</code>`;
+
+  const keyboard = new InlineKeyboard();
+
+  // Quick-buy buttons for this page
+  pageItems.forEach((item, index) => {
+    keyboard.text(`🛒 Buy 1x ${item.name}`, `shop:buy:${item.id}:${currentPage}:${userId}`);
+    if (index % 2 === 1) keyboard.row();
+  });
+
+  if (pageItems.length % 2 !== 0) keyboard.row();
+
+  // Pagination controls
+  const prevPage = currentPage > 1 ? currentPage - 1 : totalPages;
+  const nextPage = currentPage < totalPages ? currentPage + 1 : 1;
+
+  keyboard
+    .text('⬅️ Prev', `shop:page:${prevPage}:${userId}`)
+    .text(`📑 ${currentPage}/${totalPages}`, `shop:page:${currentPage}:${userId}`)
+    .text('➡️ Next', `shop:page:${nextPage}:${userId}`);
+
+  return { text, keyboard };
+}
+
+export const shop = {
+  name: 'shop',
+  aliases: [],
+  description: 'Browse weapons, tools, defenses, and consumables in the shop',
+  cooldown: 3,
+
+  async execute(ctx) {
+    const userId = ctx.from.id;
+    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+
+    const { text, keyboard } = buildShopPage(userId, 1);
+
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+  },
+
+  async handleCallback(ctx) {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1];
+    const targetUserId = Number(parts[parts.length - 1]);
+
+    // Handle Page Flip
+    if (action === 'page') {
+      const page = Number(parts[2]);
+      const { text, keyboard } = buildShopPage(targetUserId, page);
+
+      try {
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        });
+        await ctx.answerCallbackQuery();
+      } catch (err) {
+        await ctx.answerCallbackQuery({ text: 'Already on this page.' });
+      }
+      return;
+    }
+
+    // Handle Quick Buy: shop:buy:<itemId>:<page>:<userId>
+    if (action === 'buy') {
+      const itemId = parts[2];
+      const page = Number(parts[3]);
+      const item = getItem(itemId);
+
+      if (!item || !item.buyPrice) {
+        return ctx.answerCallbackQuery({ text: 'Item not available for purchase.', show_alert: true });
+      }
+
+      const user = userRepo.getUser(targetUserId);
+      if (!user || user.wallet < item.buyPrice) {
+        return ctx.answerCallbackQuery({
+          text: `❌ Insufficient funds! You need ${formatCoins(item.buyPrice)}.`,
+          show_alert: true
+        });
+      }
+
+      // Deduct wallet and add item
+      userRepo.updateWallet(targetUserId, -item.buyPrice);
+      inventoryRepo.addItem(targetUserId, item.id, 1);
+
+      // Re-render shop page
+      const { text, keyboard } = buildShopPage(targetUserId, page);
+      await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      }).catch(() => {});
+
+      await ctx.answerCallbackQuery({
+        text: `✅ Purchased 1x ${item.name} for ${formatCoins(item.buyPrice)}!`
+      });
+    }
+  }
+};
+
+export default shop;
