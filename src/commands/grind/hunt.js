@@ -1,14 +1,15 @@
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown, checkDropChance, rollLuck } from '../../utils/luckEngine.js';
 import { items } from '../../config/items.js';
-import { formatCoins, randomBetween, pickRandom } from '../../utils/formatters.js';
+import { formatCoins, randomBetween } from '../../utils/formatters.js';
 
 export const hunt = {
   name: 'hunt',
   aliases: [],
   description: 'Venture into the wilderness with a rifle to hunt wild beasts',
-  cooldown: 35,
+  cooldown: 35, // 17s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -22,11 +23,12 @@ export const hunt = {
       );
     }
 
-    const hasHorseshoe = inventoryRepo.hasBuff(userId, 'horseshoe');
+    const luckInfo = getLuckBreakdown(userId);
 
-    // 5% chance rifle breaks
+    // Break chance (reduced if high luck)
+    const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
     let rifleBroke = false;
-    if (Math.random() < 0.05) {
+    if (Math.random() < breakProb) {
       inventoryRepo.removeItem(userId, 'rifle', 1);
       rifleBroke = true;
     }
@@ -35,17 +37,18 @@ export const hunt = {
       ? `\n\n💥 <b>MISFIRE!</b> Your 🔫 <b>Hunting Rifle backfired and broke!</b> Buy a new one with <code>/buy rifle</code>.`
       : '';
 
-    // Check for rare Dragon: 1% base, 3% with horseshoe
-    const dragonChance = hasHorseshoe ? 0.03 : 0.01;
-    if (Math.random() < dragonChance) {
+    // Check for rare Dragon: 1% base chance boosted by luckEngine
+    if (checkDropChance(userId, 0.01)) {
       inventoryRepo.addItem(userId, 'dragon', 1);
-      const bonusCoins = randomBetween(5000, 15000);
+      const bonusCoins = Math.floor(randomBetween(5000, 15000) * (1 + (luckInfo.totalBonus / 200)));
       userRepo.updateWallet(userId, bonusCoins);
       const xpRes = addXp(userId, 100);
 
       const dragonItem = items.dragon;
+      let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
+
       return ctx.reply(
-        `🐉 <b>LEGENDARY ENCOUNTER!</b>\n` +
+        `🐉 <b>LEGENDARY ENCOUNTER!</b>${luckTag}\n` +
         `You sighted a blazing beast soaring above the mountain ridge and took the shot of a lifetime!\n\n` +
         `🏆 <b>Brought Down:</b> 1x ${dragonItem.emoji} <b>${dragonItem.name}</b> (Value: 🪙 35,000)\n` +
         `🪙 <b>Bounty Claimed:</b> +${formatCoins(bonusCoins)}\n` +
@@ -56,9 +59,9 @@ export const hunt = {
       );
     }
 
-    const roll = randomBetween(1, 100);
+    const roll = rollLuck(userId, 1, 100);
 
-    // 20% nothing
+    // 20% nothing (Roll <= 20)
     if (roll <= 20) {
       const xpRes = addXp(userId, 15);
       return ctx.reply(
@@ -70,11 +73,12 @@ export const hunt = {
       );
     }
 
-    // 14% Both Boar & Deer + coins
-    if (roll > 86) {
+    // High roll: Both Boar & Deer + coins
+    if (roll > 80) {
       inventoryRepo.addItem(userId, 'boar', 1);
       inventoryRepo.addItem(userId, 'deer', 1);
-      const foundCoins = randomBetween(1000, 3000);
+      const baseCoins = randomBetween(1000, 3000);
+      const foundCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
       userRepo.updateWallet(userId, foundCoins);
       const xpRes = addXp(userId, randomBetween(35, 50));
 
@@ -88,7 +92,7 @@ export const hunt = {
       );
     }
 
-    // 50% Boar or Deer
+    // Standard game: Boar or Deer
     const targetPrey = Math.random() < 0.5 ? 'boar' : 'deer';
     inventoryRepo.addItem(userId, targetPrey, 1);
     const preyObj = items[targetPrey];

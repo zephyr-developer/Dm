@@ -18,8 +18,11 @@ function buildBalanceCard(targetUser) {
   const netWorth = calculateNetWorth(targetUser);
   const bankPercent = targetUser.bank_max > 0 ? Math.floor((targetUser.bank / targetUser.bank_max) * 100) : 0;
   const bankBar = progressBar(targetUser.bank, targetUser.bank_max, 8);
+  const isPremium = (targetUser.premium_until || 0) > Date.now();
 
-  const card = `💳 <b>Financial Portfolio for ${sanitizeHtml(targetUser.first_name)}</b>\n` +
+  const premiumBadge = isPremium ? ' 💎 <b>[PREMIUM MEMBER]</b>' : '';
+
+  const card = `💳 <b>Financial Portfolio for ${sanitizeHtml(targetUser.first_name)}</b>${premiumBadge}\n` +
     (targetUser.username ? `👤 <i>@${targetUser.username}</i>\n\n` : `\n`) +
     `👛 <b>Wallet:</b> ${formatCoins(targetUser.wallet)}\n` +
     `🏦 <b>Bank:</b> ${formatCoins(targetUser.bank)} / ${formatCoins(targetUser.bank_max)} (<b>${bankPercent}%</b>)\n` +
@@ -36,7 +39,7 @@ function buildBalanceCard(targetUser) {
 export const balance = {
   name: 'balance',
   aliases: ['bal'],
-  description: 'View your wallet, bank, and total net worth',
+  description: 'View your wallet, bank, and total net worth (with Premium indicator)',
   cooldown: 0,
 
   async execute(ctx) {
@@ -44,7 +47,6 @@ export const balance = {
     let targetUsername = ctx.from.username;
     let targetFirstName = ctx.from.first_name;
 
-    // Check if command is a reply to another user
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
       targetUserId = replied.id;
@@ -81,7 +83,6 @@ export const balance = {
         });
         await ctx.answerCallbackQuery({ text: 'Balance refreshed!' });
       } catch (err) {
-        // If content did not change, just answer callback
         await ctx.answerCallbackQuery({ text: 'Balance is already up to date.' });
       }
     }

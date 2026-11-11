@@ -1,6 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins } from '../../utils/formatters.js';
 
 const MULTIPLIER_POOL = [0, 0.5, 1, 1, 1.5, 2, 3, 5, 'SKULL'];
@@ -41,7 +42,7 @@ export const scratch = {
   name: 'scratch',
   aliases: [],
   description: 'Scratch 3 mystery multiplier tiles on a 3x3 scratchcard ticket',
-  cooldown: 5,
+  cooldown: 15,
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -88,8 +89,19 @@ export const scratch = {
     // Deduct bet immediately
     userRepo.updateWallet(userId, -bet);
 
+    // Apply Luck influence to board multipliers
+    const luckInfo = getLuckBreakdown(userId);
+    let pool = [...MULTIPLIER_POOL];
+    if (luckInfo.totalBonus >= 50) {
+      // High luck (Horseshoe / Clover / Admin Luck): Replace skull with massive 5x/10x bonus
+      pool = pool.map(v => v === 'SKULL' ? (Math.random() < 0.5 ? 5 : 10) : v);
+    } else if (luckInfo.totalBonus > 0 && Math.random() * 100 < luckInfo.totalBonus) {
+      // Moderate luck chance to eliminate skull
+      pool = pool.map(v => v === 'SKULL' ? 3 : v);
+    }
+
     // Shuffle the 9 multipliers
-    const board = [...MULTIPLIER_POOL].sort(() => 0.5 - Math.random());
+    const board = pool.sort(() => 0.5 - Math.random());
 
     const session = {
       userId,
@@ -103,7 +115,8 @@ export const scratch = {
     const keyboard = buildScratchKeyboard(userId, board, []);
 
     const prompt = `🎫 <b>TeleMemer Lucky Scratchcard</b>\n` +
-      `Ticket Cost: <b>${formatCoins(bet)}</b>\n\n` +
+      `Ticket Cost: <b>${formatCoins(bet)}</b>\n` +
+      (luckInfo.totalBonus > 0 ? `🍀 <i>Luck Active: +${luckInfo.totalBonus}%</i>\n\n` : '\n') +
       `Scratch <b>3 tiles</b> below by clicking the ❓ boxes. Beware the 💀!`;
 
     await ctx.reply(prompt, {

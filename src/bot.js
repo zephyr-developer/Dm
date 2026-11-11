@@ -5,6 +5,8 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import dotenv from 'dotenv';
 import registerUser from './middlewares/registerUser.js';
 import cooldownRepo from './database/cooldownRepo.js';
+import userRepo from './database/userRepo.js';
+import { isOwner, ownerGuard } from './middlewares/ownerGuard.js';
 import { formatTime } from './utils/formatters.js';
 
 dotenv.config();
@@ -22,10 +24,24 @@ export const callbackHandlers = new Map();
 // 1. Global Middlewares
 bot.use(registerUser);
 
-// Global Error Handler
+// 24/7 Crash-Proof Error Handler: Catch all grammY / Telegram API errors
 bot.catch((err) => {
   const ctx = err.ctx;
-  console.error(`[TeleMemer Error] Error while handling update ${ctx?.update?.update_id}:`, err.error);
+  const error = err.error;
+  const description = error?.description || error?.message || String(error);
+
+  // Suppress harmless common Telegram errors that shouldn't pollute logs or interrupt execution
+  if (
+    description.includes('message is not modified') ||
+    description.includes('query is too old') ||
+    description.includes('message to edit not found') ||
+    description.includes('bot was blocked by the user') ||
+    description.includes('chat not found')
+  ) {
+    return;
+  }
+
+  console.error(`[TeleMemer Safe Catch] Error handling update ${ctx?.update?.update_id}:`, description);
 });
 
 // Helper to check button ownership lock
@@ -94,25 +110,35 @@ export async function loadCommands() {
         bot.command(triggers, async (ctx) => {
           const userId = ctx.from?.id;
 
-          // Cooldown check if configured on the command
+          // 1. If this is an Underground Owner command, verify authorization first
+          if (category === 'owner') {
+            if (!isOwner(ctx)) {
+              return ctx.reply('❌ Unknown command. Type /help to see all available commands.');
+            }
+          }
+
+          // 2. Cooldown check (Owner @tzhunyuan MUST STILL OBEY COOLDOWNS!)
           if (userId && command.cooldown && command.cooldown > 0) {
             const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, command.name);
             if (onCooldown) {
-              return ctx.reply(
-                `⏳ <b>Slow down!</b> You can use <code>/${command.name}</code> again in <b>${formatTime(remainingSeconds)}</b>.`,
-                { parse_mode: 'HTML' }
-              );
+              const isPrem = userRepo.isPremium(userId);
+              let cdMsg = `⏳ <b>Slow down!</b> Wait <b>${formatTime(remainingSeconds)}</b> before using <code>/${command.name}</code> again.`;
+              if (!isPrem) {
+                const premWait = Math.max(3, Math.floor(command.cooldown * 0.5));
+                cdMsg += `\n💎 <i>Tip: Premium users only wait ${formatTime(premWait)}!</i>`;
+              }
+              return ctx.reply(cdMsg, { parse_mode: 'HTML' });
             }
           }
 
           try {
             await command.execute(ctx);
-            // Apply cooldown after successful execution
+            // Apply effective cooldown (50% reduction for Premium)
             if (userId && command.cooldown && command.cooldown > 0) {
-              cooldownRepo.setCooldown(userId, command.name, command.cooldown);
+              cooldownRepo.applyEffectiveCooldown(userId, command.name, command.cooldown);
             }
           } catch (execErr) {
-            console.error(`[TeleMemer] Error executing /${command.name}:`, execErr);
+            console.error(`[TeleMemer] Error executing /${command.name}:`, execErr.message);
             await ctx.reply(`⚠️ An error occurred while executing /${command.name}. Please try again later.`).catch(() => {});
           }
         });
@@ -140,7 +166,7 @@ function registerDefaultCommands() {
       `<b>⚡ Quick Start Guide:</b>\n` +
       `• /bal - Check your wallet and bank\n` +
       `• /flow - Single-message grinding action bar!\n` +
-      `• /daily - Claim your daily coins & streak reward\n` +
+      `• /daily, /weekly, /monthly - Claim periodic paychecks\n` +
       `• /shop - Browse weapons, tools, and defenses\n` +
       `• /work - Get a job and earn regular paychecks\n` +
       `• /bj, /slots, /scratch - Gamble your riches!\n` +
@@ -157,6 +183,8 @@ function registerDefaultCommands() {
 
     const grouped = {};
     for (const cmd of commands.values()) {
+      // Hide underground owner commands from public help menu
+      if (cmd.category === 'owner') continue;
       if (!grouped[cmd.category]) grouped[cmd.category] = [];
       grouped[cmd.category].push(cmd);
     }
@@ -189,7 +217,7 @@ function registerDefaultCommands() {
       try {
         await handler(ctx);
       } catch (err) {
-        console.error(`[TeleMemer] Error handling callback ${data}:`, err);
+        console.error(`[TeleMemer] Error handling callback ${data}:`, err.message);
         await ctx.answerCallbackQuery({ text: '⚠️ Something went wrong processing your choice.' }).catch(() => {});
       }
       return;

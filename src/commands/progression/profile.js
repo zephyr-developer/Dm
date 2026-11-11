@@ -3,6 +3,7 @@ import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { getJob } from '../../config/jobs.js';
 import { getXpProgress } from '../../utils/levelEngine.js';
+import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, formatTime, progressBar, sanitizeHtml } from '../../utils/formatters.js';
 
 function buildProfileCard(targetUserId) {
@@ -13,6 +14,17 @@ function buildProfileCard(targetUserId) {
   const xpBar = progressBar(xpProg.current, xpProg.max, 8);
   const currentJob = getJob(user.job_id);
   const activeBuffs = inventoryRepo.getActiveBuffs(targetUserId);
+  const luckBreakdown = getLuckBreakdown(targetUserId);
+
+  const isPrem = userRepo.isPremium(targetUserId);
+  const premRemaining = userRepo.getPremiumRemaining(targetUserId);
+
+  let premiumBadge = '';
+  if (isPrem) {
+    const formattedRemaining = formatTime(Math.floor(premRemaining / 1000));
+    premiumBadge = `💎 <b>PREMIUM VIP MEMBER</b> (<i>${formattedRemaining} left</i>)\n` +
+      `⚡ <i>Perks: 50% Cooldown Reductions, +10% Passive Luck, 2x Claim Payouts</i>\n\n`;
+  }
 
   let buffsText = '<i>None active</i>';
   if (activeBuffs.length > 0) {
@@ -26,10 +38,12 @@ function buildProfileCard(targetUserId) {
   const card = `📜 <b>Player Profile: ${sanitizeHtml(user.first_name)}</b>\n` +
     (user.username ? `👤 <i>@${user.username}</i>\n` : '') +
     `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    premiumBadge +
     `⭐ <b>Level:</b> ${user.level} (Prestige: <b>Tier ${user.prestige}</b>)\n` +
     `📈 <b>XP Progress:</b> ${xpBar} (${xpProg.current}/${xpProg.max})\n\n` +
     `💼 <b>Occupation:</b> ${currentJob ? `${currentJob.emoji} ${currentJob.name} (${user.work_shifts} shifts)` : '<i>Unemployed</i>'}\n` +
     `🔥 <b>Daily Streak:</b> ${user.streak_daily} days\n` +
+    `🍀 <b>Total Luck:</b> +${luckBreakdown.totalBonus}%\n` +
     `🛡️ <b>Passive Mode:</b> ${isPassive ? '🟢 <b>ENABLED</b> (Robbery Immune)' : '🔴 <b>DISABLED</b> (Vulnerable to /rob)'}\n\n` +
     `👛 <b>Wallet:</b> ${formatCoins(user.wallet)}\n` +
     `🏦 <b>Bank Vault:</b> ${formatCoins(user.bank)} / ${formatCoins(user.bank_max)}\n\n` +

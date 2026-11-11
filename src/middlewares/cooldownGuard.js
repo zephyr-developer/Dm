@@ -1,17 +1,24 @@
 import cooldownRepo from '../database/cooldownRepo.js';
+import userRepo from '../database/userRepo.js';
 import { formatTime } from '../utils/formatters.js';
 
-export function createCooldownGuard(commandName, durationSeconds) {
+export function createCooldownGuard(commandName, baseDurationSeconds) {
   return async function cooldownGuard(ctx, next) {
     const userId = ctx.from?.id;
-    if (!userId || !durationSeconds || durationSeconds <= 0) {
+    if (!userId || !baseDurationSeconds || baseDurationSeconds <= 0) {
       return next();
     }
 
     const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, commandName);
 
     if (onCooldown) {
-      const waitMsg = `⏳ <b>Slow down!</b> You can use <code>/${commandName}</code> again in <b>${formatTime(remainingSeconds)}</b>.`;
+      const isPremium = userRepo.isPremium(userId);
+      let waitMsg = `⏳ <b>Slow down!</b> Wait <b>${formatTime(remainingSeconds)}</b> before using <code>/${commandName}</code> again.`;
+
+      if (!isPremium) {
+        const premiumWait = Math.max(3, Math.floor(baseDurationSeconds * 0.5));
+        waitMsg += `\n💎 <i>Tip: Premium users only wait ${formatTime(premiumWait)}!</i>`;
+      }
 
       if (ctx.callbackQuery) {
         return ctx.answerCallbackQuery({
@@ -26,17 +33,24 @@ export function createCooldownGuard(commandName, durationSeconds) {
     // Execute the command handler
     await next();
 
-    // Set cooldown only if command ran without unhandled exception
-    cooldownRepo.setCooldown(userId, commandName, durationSeconds);
+    // Set effective cooldown (50% reduction for Premium)
+    cooldownRepo.applyEffectiveCooldown(userId, commandName, baseDurationSeconds);
   };
 }
 
-export function enforceCooldown(userId, commandName, durationSeconds) {
+export function enforceCooldown(userId, commandName, baseDurationSeconds) {
   const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, commandName);
   if (onCooldown) {
-    return { allowed: false, remainingSeconds, message: `⏳ Cooldown active! Please wait ${formatTime(remainingSeconds)}.` };
+    const isPremium = userRepo.isPremium(userId);
+    let message = `⏳ Cooldown active! Wait ${formatTime(remainingSeconds)}.`;
+    if (!isPremium) {
+      const premiumWait = Math.max(3, Math.floor(baseDurationSeconds * 0.5));
+      message += ` (💎 Premium only waits ${formatTime(premiumWait)}!)`;
+    }
+    return { allowed: false, remainingSeconds, message };
   }
-  cooldownRepo.setCooldown(userId, commandName, durationSeconds);
+
+  cooldownRepo.applyEffectiveCooldown(userId, commandName, baseDurationSeconds);
   return { allowed: true, remainingSeconds: 0 };
 }
 

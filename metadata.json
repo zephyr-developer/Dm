@@ -2,5 +2,7 @@
   "name": "TeleMemer - Telegram RPG & Economy Bot",
   "description": "A full-featured Telegram RPG and Economy Bot inspired by Dank Memer, featuring dynamic command loading, multi-step inline games, inventory, gambling, and leveling.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

@@ -5,6 +5,7 @@ import { handleDeath } from '../../utils/deathEngine.js';
 import { addXp } from '../../utils/levelEngine.js';
 import { items } from '../../config/items.js';
 import { formatCoins, randomBetween, pickRandom } from '../../utils/formatters.js';
+import { getLuckBreakdown, checkDropChance } from '../../utils/luckEngine.js';
 
 export const SEARCH_LOCATIONS = {
   dumpster: {
@@ -158,9 +159,10 @@ export const search = {
       return ctx.answerCallbackQuery({ text: 'Location not found!' });
     }
 
-    const hasHorseshoe = inventoryRepo.hasBuff(targetUserId, 'horseshoe');
-    // Horseshoe reduces death chance by 5% and adds luck to coins
-    const effectiveDeathChance = Math.max(0.02, location.deathChance - (hasHorseshoe ? 0.05 : 0));
+    const luckInfo = getLuckBreakdown(targetUserId);
+    // Luck reduces death chance and boosts rewards
+    const deathReduction = luckInfo.totalBonus / 400;
+    const effectiveDeathChance = Math.max(0.01, location.deathChance - deathReduction);
 
     // Roll for death
     if (Math.random() < effectiveDeathChance) {
@@ -171,12 +173,12 @@ export const search = {
 
     // Success! Calculate coins
     const baseCoins = randomBetween(location.coinRange[0], location.coinRange[1]);
-    const earnedCoins = hasHorseshoe ? Math.floor(baseCoins * 1.2) : baseCoins;
+    const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 150)));
     userRepo.updateWallet(targetUserId, earnedCoins);
 
-    // Roll for item drop (40% chance if pool is not empty)
+    // Roll for item drop with luck multiplier
     let dropMsg = '';
-    if (location.itemPool.length > 0 && Math.random() < 0.40) {
+    if (location.itemPool.length > 0 && checkDropChance(targetUserId, 0.40)) {
       const itemId = pickRandom(location.itemPool);
       inventoryRepo.addItem(targetUserId, itemId, 1);
       const itm = items[itemId] || { emoji: '📦', name: itemId };
@@ -185,8 +187,15 @@ export const search = {
 
     const xpResult = addXp(targetUserId);
 
+    let luckTag = '';
+    if (luckInfo.customLuck > 0) {
+      luckTag = ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
+    } else if (luckInfo.hasHorseshoe) {
+      luckTag = ' <i>(🧲 Lucky Horseshoe bonus!)</i>';
+    }
+
     const resultText = `🔍 You scavenged inside the <b>${location.emoji} ${location.name}</b> and discovered <b>${formatCoins(earnedCoins)}</b>!` +
-      (hasHorseshoe ? ' <i>(🧲 Lucky Horseshoe bonus!)</i>' : '') +
+      luckTag +
       dropMsg +
       `\n⭐ <b>XP Earned:</b> +${xpResult.earnedXp} XP` +
       (xpResult.message ? `\n${xpResult.message}` : '');

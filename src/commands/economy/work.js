@@ -85,13 +85,15 @@ export const work = {
       );
     }
 
-    // Check cooldown for working (45 minutes = 2700s)
+    // Check cooldown for working (45 minutes = 2700s base, 22.5 minutes for Premium)
     const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, 'work');
     if (onCooldown) {
-      return ctx.reply(
-        `⏳ <b>Your shift ended recently!</b> You can work again in <b>${formatTime(remainingSeconds)}</b>.`,
-        { parse_mode: 'HTML' }
-      );
+      const isPrem = userRepo.isPremium(userId);
+      let waitMsg = `⏳ <b>Your shift ended recently!</b> You can work again in <b>${formatTime(remainingSeconds)}</b>.`;
+      if (!isPrem) {
+        waitMsg += `\n💎 <i>Tip: Premium users only wait 22m 30s!</i>`;
+      }
+      return ctx.reply(waitMsg, { parse_mode: 'HTML' });
     }
 
     const currentJob = getJob(user.job_id);
@@ -169,8 +171,8 @@ export const work = {
       const job = getJob(session.jobId);
       activeWorkSessions.delete(targetUserId);
 
-      // Set 45-minute cooldown
-      cooldownRepo.setCooldown(targetUserId, 'work', 2700);
+      // Set 45-minute base cooldown (halved to 22.5 mins if Premium)
+      cooldownRepo.applyEffectiveCooldown(targetUserId, 'work', 2700);
 
       const isCorrect = guess === session.correctEmoji;
       let payout = 0;

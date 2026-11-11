@@ -1,13 +1,14 @@
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { handleDeath } from '../../utils/deathEngine.js';
+import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
 
 export const rob = {
   name: 'rob',
   aliases: [],
   description: 'Pickpocket another user in the group chat for a percentage of their wallet',
-  cooldown: 120,
+  cooldown: 120, // 60s for Premium
 
   async execute(ctx) {
     if (ctx.chat.type === 'private') {
@@ -59,11 +60,13 @@ export const rob = {
       return ctx.reply(`🤷 <b>${sanitizeHtml(target.first_name)}</b> is too broke to rob! They have less than 🪙 1,000 in their wallet.`, { parse_mode: 'HTML' });
     }
 
-    // 4. Check Defenses: LANDMINE
+    const callerLuck = getLuckBreakdown(callerId);
+
+    // 4. Check Defenses: LANDMINE (Luck helps detect & defuse)
     if (inventoryRepo.hasBuff(target.user_id, 'landmine')) {
       inventoryRepo.removeBuff(target.user_id, 'landmine');
-      // 50% chance it explodes
-      if (Math.random() < 0.50) {
+      const detonateChance = Math.max(0.15, 0.50 - (callerLuck.totalBonus / 400));
+      if (Math.random() < detonateChance) {
         const fine = Math.min(caller.wallet, 2000);
         userRepo.updateWallet(callerId, -fine);
         userRepo.updateWallet(target.user_id, fine);
@@ -92,9 +95,9 @@ export const rob = {
       );
     }
 
-    // 6. Roll Robbery Probability (40% success rate)
-    const roll = Math.random();
-    const isSuccess = roll < 0.40;
+    // 6. Roll Robbery Probability (40% base + luck bonus)
+    const successRate = Math.min(0.90, 0.40 + (callerLuck.totalBonus / 250));
+    const isSuccess = Math.random() < successRate;
 
     if (!isSuccess) {
       // Caught! Pay 25% of wallet (max 10,000)
@@ -110,19 +113,22 @@ export const rob = {
       );
     }
 
-    // Success! Determine steal tier
-    const stealTierRoll = Math.random();
-    let stealPercentage = 0.15; // default 15%
+    // Success! Steal percentage tilted by luck
+    const stealRoll = Math.random();
+    let stealPercentage = 0.15;
 
-    if (stealTierRoll < 0.70) {
-      // Small steal: 10%–25%
-      stealPercentage = randomBetween(10, 25) / 100;
-    } else if (stealTierRoll < 0.95) {
+    const jackpotChance = Math.min(0.30, 0.05 + (callerLuck.totalBonus / 500));
+    const bigStealChance = Math.min(0.60, 0.25 + (callerLuck.totalBonus / 300));
+
+    if (stealRoll < jackpotChance) {
+      // Cleanout steal: 80%–100%
+      stealPercentage = randomBetween(80, 100) / 100;
+    } else if (stealRoll < (jackpotChance + bigStealChance)) {
       // Big steal: 26%–50%
       stealPercentage = randomBetween(26, 50) / 100;
     } else {
-      // Jackal roll: 80%–100%
-      stealPercentage = randomBetween(80, 100) / 100;
+      // Small steal: 10%–25%
+      stealPercentage = randomBetween(10, 25) / 100;
     }
 
     const stolenAmount = Math.max(1, Math.floor(target.wallet * stealPercentage));
@@ -136,8 +142,10 @@ export const rob = {
       heistFlavor = '🏃 <b>FAT HEIST!</b> You snatched a hefty wad of cash';
     }
 
+    let luckTag = callerLuck.customLuck > 0 ? ` <i>(🎲 +${callerLuck.customLuck}% luck active!)</i>` : '';
+
     return ctx.reply(
-      `🥷 <b>Robbery Successful!</b>\n` +
+      `🥷 <b>Robbery Successful!</b>${luckTag}\n` +
       `${heistFlavor} and stole <b>${formatCoins(stolenAmount)}</b> from <b>${sanitizeHtml(target.first_name)}</b>!\n\n` +
       `👛 <b>Your Wallet:</b> ${formatCoins(caller.wallet + stolenAmount)}`,
       { parse_mode: 'HTML' }

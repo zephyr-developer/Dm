@@ -1,4 +1,4 @@
-import express from 'express';
+import http from 'node:http';
 import dotenv from 'dotenv';
 import db, { initDatabase } from './database/db.js';
 import { bot, loadCommands } from './bot.js';
@@ -9,10 +9,22 @@ dotenv.config();
 
 const PORT = Number(process.env.PORT) || 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const KEEP_ALIVE_URL = process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL;
+
+// ====================================================================
+// 1. GLOBAL PROCESS CRASH GUARDS (24/7 Crash-Proofing)
+// ====================================================================
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[TeleMemer Crash Guard] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[TeleMemer Crash Guard] Uncaught Exception:', err);
+});
 
 async function bootstrap() {
   console.log('----------------------------------------------------');
-  console.log('🐸 TeleMemer - Telegram RPG & Economy Engine');
+  console.log('🐸 TeleMemer - 24/7 Telegram RPG & Economy Engine');
   console.log('----------------------------------------------------');
 
   // 1. Initialize SQLite database schemas
@@ -32,65 +44,93 @@ async function bootstrap() {
     console.error('❌ Error during command loading:', loaderErr);
   }
 
-  // 3. Launch HTTP Server (for health-checks, dashboard status & preview)
-  const app = express();
-  app.use(express.json());
+  // 3. Lightweight Native HTTP Server (for /health and cloud host keep-alive)
+  const server = http.createServer((req, res) => {
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  app.get('/api/health', (req, res) => {
-    try {
-      const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get()?.count || 0;
-      const totalCoins = db.prepare('SELECT SUM(wallet + bank) as total FROM users').get()?.total || 0;
-      const groupCount = db.prepare('SELECT COUNT(DISTINCT chat_id) as count FROM group_members').get()?.count || 0;
-
-      res.json({
-        status: 'online',
-        app: 'TeleMemer',
-        botConnected: Boolean(BOT_TOKEN && !BOT_TOKEN.includes('1234567890') && !BOT_TOKEN.includes('DUMMY')),
-        database: 'connected',
-        stats: {
-          registeredUsers: userCount,
-          activeGroups: groupCount,
-          totalEconomyCoins: totalCoins,
-          catalogItems: getAllItems().length,
-          availableJobs: getAllJobs().length
-        }
-      });
-    } catch (err) {
-      res.status(500).json({ status: 'error', error: err.message });
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
     }
-  });
 
-  app.get('/api/items', (req, res) => {
-    res.json(getAllItems());
-  });
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-  app.get('/api/jobs', (req, res) => {
-    res.json(getAllJobs());
-  });
+    if (url.pathname === '/health' || url.pathname === '/api/health') {
+      try {
+        const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get()?.count || 0;
+        const totalCoins = db.prepare('SELECT SUM(wallet + bank) as total FROM users').get()?.total || 0;
+        const groupCount = db.prepare('SELECT COUNT(DISTINCT chat_id) as count FROM group_members').get()?.count || 0;
+        const premiumCount = db.prepare('SELECT COUNT(*) as count FROM users WHERE premium_until > ?').get(Date.now())?.count || 0;
 
-  // Start Express on PORT
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 TeleMemer HTTP Status & API Service running on http://0.0.0.0:${PORT}`);
-  });
+        const responsePayload = JSON.stringify({
+          status: 'online',
+          app: 'TeleMemer',
+          uptime: process.uptime(),
+          botConnected: Boolean(BOT_TOKEN && !BOT_TOKEN.includes('1234567890') && !BOT_TOKEN.includes('DUMMY')),
+          database: 'connected (WAL)',
+          stats: {
+            registeredUsers: userCount,
+            activeGroups: groupCount,
+            premiumUsers: premiumCount,
+            totalEconomyCoins: totalCoins,
+            catalogItems: getAllItems().length,
+            availableJobs: getAllJobs().length
+          }
+        });
 
-  // 4. Start Telegram Bot Long-Polling
-  if (BOT_TOKEN && !BOT_TOKEN.includes('1234567890') && !BOT_TOKEN.includes('DUMMY') && !BOT_TOKEN.includes('your_telegram_bot_token')) {
-    console.log('🤖 Connecting to Telegram Bot API with configured BOT_TOKEN...');
-    bot.start({
-      onStart: (botInfo) => {
-        console.log(`🎉 TeleMemer Bot is LIVE! Username: @${botInfo.username} (ID: ${botInfo.id})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(responsePayload);
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'error', error: err.message }));
       }
-    }).catch((botErr) => {
-      console.error('❌ Failed to start Telegram Bot long polling:', botErr.message);
-    });
-  } else {
-    console.log('ℹ️ No live Telegram BOT_TOKEN detected in environment.');
-    console.log('👉 To connect to real Telegram:');
-    console.log('   1. Message @BotFather on Telegram and send /newbot');
-    console.log('   2. Copy the API Token provided');
-    console.log('   3. Put BOT_TOKEN="your_token_here" in .env and restart!');
-    console.log('   TeleMemer database, command engine, and HTTP services are fully operational.');
+      return;
+    }
+
+    if (url.pathname === '/api/items') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getAllItems()));
+      return;
+    }
+
+    if (url.pathname === '/api/jobs') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getAllJobs()));
+      return;
+    }
+
+    // Default status fallback
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('TeleMemer 24/7 Engine is LIVE.\n');
+  });
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 TeleMemer Native HTTP Keep-Alive Server running on http://0.0.0.0:${PORT}/health`);
+  });
+
+  // 4. Anti-Sleep 4-Minute Self-Ping (Prevents Render / Koyeb / Fly sleeping)
+  if (KEEP_ALIVE_URL) {
+    console.log(`⏱️ Anti-Sleep Heartbeat active for: ${KEEP_ALIVE_URL}`);
+    const pingTarget = KEEP_ALIVE_URL.endsWith('/health')
+      ? KEEP_ALIVE_URL
+      : `${KEEP_ALIVE_URL.replace(/\/+$/, '')}/health`;
+
+    setInterval(async () => {
+      try {
+        const res = await fetch(pingTarget);
+        console.log(`[Anti-Sleep Ping] Heartbeat pinged ${pingTarget} -> Status ${res.status}`);
+      } catch (err) {
+        console.warn(`[Anti-Sleep Ping] Ping warning: ${err.message}`);
+      }
+    }, 240000); // 4 minutes
   }
+
+  // 5. Connect Telegram Bot with Auto-Reconnect & Drop Pending Updates
+  startTelegramBotWithReconnect();
 
   // Graceful shutdown
   const shutdown = () => {
@@ -98,7 +138,7 @@ async function bootstrap() {
     server.close(() => {
       bot.stop().then(() => {
         db.close();
-        console.log('👋 Database and bot connections closed.');
+        console.log('👋 Database and bot connections closed safely.');
         process.exit(0);
       }).catch(() => process.exit(0));
     });
@@ -106,6 +146,34 @@ async function bootstrap() {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+}
+
+function startTelegramBotWithReconnect() {
+  if (BOT_TOKEN && !BOT_TOKEN.includes('1234567890') && !BOT_TOKEN.includes('DUMMY') && !BOT_TOKEN.includes('your_telegram_bot_token')) {
+    console.log('🤖 Connecting to Telegram Bot API with drop_pending_updates: true...');
+
+    const launch = () => {
+      bot.start({
+        drop_pending_updates: true,
+        allowed_updates: ['message', 'callback_query'],
+        onStart: (botInfo) => {
+          console.log(`🎉 TeleMemer Bot is LIVE! Username: @${botInfo.username} (ID: ${botInfo.id})`);
+        }
+      }).catch((botErr) => {
+        console.error('⚠️ Telegram connection dropped:', botErr.message);
+        console.log('🔄 Reconnecting in 5 seconds...');
+        setTimeout(launch, 5000);
+      });
+    };
+
+    launch();
+  } else {
+    console.log('ℹ️ No live Telegram BOT_TOKEN detected in environment.');
+    console.log('👉 To connect to real Telegram:');
+    console.log('   1. Message @BotFather on Telegram and send /newbot');
+    console.log('   2. Set BOT_TOKEN="your_token" in .env');
+    console.log('   TeleMemer database, HTTP keep-alive, and command engine are fully operational.');
+  }
 }
 
 bootstrap().catch(err => {

@@ -1,5 +1,6 @@
 import userRepo from '../../database/userRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, pickRandom } from '../../utils/formatters.js';
 
 const SLOT_SYMBOLS = ['🍒', '🍋', '🍇', '🔔', '💎', '🐸'];
@@ -8,7 +9,7 @@ export const slots = {
   name: 'slots',
   aliases: [],
   description: 'Spin the reels on the TeleMemer slot machine for up to 25x Pepe Jackpot',
-  cooldown: 5,
+  cooldown: 10, // 5s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -55,10 +56,31 @@ export const slots = {
     // Deduct bet immediately
     userRepo.updateWallet(userId, -bet);
 
+    const luckInfo = getLuckBreakdown(userId);
+
     // Spin 3 symbols
-    const s1 = pickRandom(SLOT_SYMBOLS);
-    const s2 = pickRandom(SLOT_SYMBOLS);
-    const s3 = pickRandom(SLOT_SYMBOLS);
+    let s1 = pickRandom(SLOT_SYMBOLS);
+    let s2 = pickRandom(SLOT_SYMBOLS);
+    let s3 = pickRandom(SLOT_SYMBOLS);
+
+    // LuckEngine: Tilt reels if high luck is active
+    if (luckInfo.totalBonus > 0) {
+      // If customLuck >= 100, high chance for Pepe Jackpot 🐸
+      if (luckInfo.customLuck >= 100 && Math.random() < 0.45) {
+        s1 = '🐸';
+        s2 = '🐸';
+        s3 = '🐸';
+      } else if (luckInfo.totalBonus >= 50 && Math.random() < 0.50) {
+        // Guaranteed triple match
+        const luckySymbol = pickRandom(['💎', '🔔', '🍒']);
+        s1 = luckySymbol;
+        s2 = luckySymbol;
+        s3 = luckySymbol;
+      } else if (Math.random() < Math.min(0.70, luckInfo.totalBonus / 100)) {
+        // Guaranteed at least double match
+        s2 = s1;
+      }
+    }
 
     let multiplier = 0;
     let title = '';
@@ -91,8 +113,9 @@ export const slots = {
 
     const xpRes = addXp(userId, multiplier > 0 ? 25 : 10);
     const updatedWallet = userRepo.getUser(userId)?.wallet || 0;
+    let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
-    const display = `🎰 <b>SLOT REELS SPINNING...</b>\n\n` +
+    const display = `🎰 <b>SLOT REELS SPINNING...</b>${luckTag}\n\n` +
       `╔═══════════════╗\n` +
       `║   <b>${s1}  |  ${s2}  |  ${s3}</b>   ║\n` +
       `╚═══════════════╝\n\n` +

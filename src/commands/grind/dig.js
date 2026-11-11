@@ -1,6 +1,7 @@
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown, rollLuck } from '../../utils/luckEngine.js';
 import { items } from '../../config/items.js';
 import { formatCoins, randomBetween, pickRandom } from '../../utils/formatters.js';
 
@@ -8,7 +9,7 @@ export const dig = {
   name: 'dig',
   aliases: [],
   description: 'Dig in the earth with a shovel for buried treasures and critters',
-  cooldown: 35,
+  cooldown: 35, // 17s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -23,12 +24,13 @@ export const dig = {
       );
     }
 
-    const hasHorseshoe = inventoryRepo.hasBuff(userId, 'horseshoe');
-    const roll = randomBetween(1, 100) + (hasHorseshoe ? 10 : 0);
+    const luckInfo = getLuckBreakdown(userId);
+    const roll = rollLuck(userId, 1, 100);
 
-    // 5% chance shovel breaks
+    // Break chance (reduced if high luck)
+    const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
     let shovelBroke = false;
-    if (Math.random() < 0.05) {
+    if (Math.random() < breakProb) {
       inventoryRepo.removeItem(userId, 'shovel', 1);
       shovelBroke = true;
     }
@@ -49,18 +51,21 @@ export const dig = {
       );
     }
 
-    // Outcome 2: Rare Loot (Roll > 75)
-    if (roll > 75) {
+    // Outcome 2: Rare Loot (Roll > 70)
+    if (roll > 70) {
       const rareItemId = pickRandom(['banknote', 'coinbomb']);
       const rareItem = items[rareItemId];
-      const coinsFound = randomBetween(1500, 3500);
+      const baseCoins = randomBetween(1500, 3500);
+      const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
 
       inventoryRepo.addItem(userId, rareItemId, 1);
       userRepo.updateWallet(userId, coinsFound);
       const xpRes = addXp(userId, randomBetween(30, 45));
 
+      let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
+
       return ctx.reply(
-        `🌟 <b>RARE UNVEILING!</b>\n` +
+        `🌟 <b>RARE UNVEILING!</b>${luckTag}\n` +
         `Your shovel struck something solid buried deep in the ground!\n\n` +
         `🎁 <b>Item Unearthed:</b> 1x ${rareItem.emoji} <b>${rareItem.name}</b>\n` +
         `🪙 <b>Coins Found:</b> +${formatCoins(coinsFound)}\n` +
@@ -71,10 +76,11 @@ export const dig = {
       );
     }
 
-    // Outcome 3: Common Loot (Roll 21–75)
+    // Outcome 3: Common Loot (Roll 21–70)
     const commonItemId = pickRandom(['worm', 'ant', 'garbage']);
     const commonItem = items[commonItemId];
-    const coinsFound = randomBetween(500, 1500);
+    const baseCoins = randomBetween(500, 1500);
+    const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
 
     inventoryRepo.addItem(userId, commonItemId, 1);
     userRepo.updateWallet(userId, coinsFound);

@@ -18,7 +18,25 @@ const stmtCleanExpired = db.prepare(`
   DELETE FROM cooldowns WHERE expires_at <= ?
 `);
 
+const stmtGetPremiumUntil = db.prepare(`
+  SELECT premium_until FROM users WHERE user_id = ?
+`);
+
 export const cooldownRepo = {
+  isPremium(userId) {
+    const row = stmtGetPremiumUntil.get(userId);
+    return row ? (row.premium_until || 0) > Date.now() : false;
+  },
+
+  getEffectiveCooldown(userId, baseSeconds) {
+    if (!baseSeconds || baseSeconds <= 0) return 0;
+    if (this.isPremium(userId)) {
+      // 50% reduction for Premium users, minimum 3s
+      return Math.max(3, Math.floor(baseSeconds * 0.5));
+    }
+    return baseSeconds;
+  },
+
   checkCooldown(userId, command) {
     const now = Math.floor(Date.now() / 1000);
     const row = stmtGetCooldown.get(userId, command);
@@ -42,6 +60,11 @@ export const cooldownRepo = {
     const expiresAt = Math.floor(Date.now() / 1000) + durationSeconds;
     stmtSetCooldown.run(userId, command, expiresAt);
     return expiresAt;
+  },
+
+  applyEffectiveCooldown(userId, command, baseSeconds) {
+    const effective = this.getEffectiveCooldown(userId, baseSeconds);
+    return this.setCooldown(userId, command, effective);
   },
 
   resetCooldown(userId, command) {

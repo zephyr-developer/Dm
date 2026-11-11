@@ -6,8 +6,8 @@ import { formatCoins, formatTime } from '../../utils/formatters.js';
 export const daily = {
   name: 'daily',
   aliases: [],
-  description: 'Claim your daily coin salary and build a loyalty streak',
-  cooldown: 0, // Handled internally via last_daily timestamp
+  description: 'Claim your daily coin salary and build a loyalty streak (2x for Premium)',
+  cooldown: 0, // Handled internally via last_daily timestamp (calendar 24h)
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -37,10 +37,13 @@ export const daily = {
       newStreak = (user.streak_daily || 0) + 1;
     }
 
-    // Calculate reward
+    const isPremium = userRepo.isPremium(userId);
+
+    // Calculate reward: 15,000 + (streak * 2,000), doubled if Premium!
     const baseReward = 15000;
-    const streakBonus = newStreak * 1500;
-    const totalCoins = baseReward + streakBonus;
+    const streakBonus = newStreak * 2000;
+    const standardTotal = baseReward + streakBonus;
+    const totalCoins = isPremium ? standardTotal * 2 : standardTotal;
 
     // Save streak & timestamp
     userRepo.updateDailyStreak(userId, newStreak, now);
@@ -49,19 +52,23 @@ export const daily = {
     // Every 7th day, award 1x banknote
     let specialRewardText = '';
     if (newStreak % 7 === 0) {
-      inventoryRepo.addItem(userId, 'banknote', 1);
-      specialRewardText = `\n🎁 <b>7-DAY STREAK BONUS:</b> You received 1x 📜 <b>Bank Note</b>!`;
+      const notesToGive = isPremium ? 2 : 1;
+      inventoryRepo.addItem(userId, 'banknote', notesToGive);
+      specialRewardText = `\n🎁 <b>7-DAY STREAK BONUS:</b> You received <b>${notesToGive}x</b> 📜 <b>Bank Note</b>!`;
     }
 
     // Add XP
-    const xpResult = addXp(userId, 50);
+    const xpResult = addXp(userId, isPremium ? 80 : 50);
+
+    const premiumText = isPremium ? '\n💎 <b>2x PREMIUM MULTIPLIER APPLIED!</b>' : '\n💡 <i>Tip: Premium members get 2x Daily Coins!</i>';
 
     const msg = `📅 <b>Daily Paycheck Claimed!</b>\n\n` +
       `🪙 <b>Base Salary:</b> ${formatCoins(baseReward)}\n` +
       `🔥 <b>Streak Bonus:</b> +${formatCoins(streakBonus)} (${newStreak} Day Streak!)\n` +
-      `💰 <b>Total Received:</b> <b>${formatCoins(totalCoins)}</b>\n` +
-      `⭐ <b>XP Earned:</b> +50 XP` +
+      `💰 <b>Total Received:</b> <b>${formatCoins(totalCoins)}</b>` +
+      premiumText +
       specialRewardText +
+      `\n⭐ <b>XP Earned:</b> +${xpResult.earnedXp} XP` +
       (xpResult.message ? `\n${xpResult.message}` : '');
 
     return ctx.reply(msg, { parse_mode: 'HTML' });

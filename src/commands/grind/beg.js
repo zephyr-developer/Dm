@@ -1,6 +1,7 @@
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown, rollLuck, checkDropChance } from '../../utils/luckEngine.js';
 import { formatCoins, randomBetween, pickRandom } from '../../utils/formatters.js';
 import { items } from '../../config/items.js';
 
@@ -28,18 +29,17 @@ const GENEROUS_NPCS = [
 export const beg = {
   name: 'beg',
   aliases: [],
-  description: 'Beg passersby and celebrities for spare change',
-  cooldown: 25,
+  description: 'Beg passersby and celebrities for spare change (boosted by luck)',
+  cooldown: 25, // 12s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
     userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const hasHorseshoe = inventoryRepo.hasBuff(userId, 'horseshoe');
-    const luckBonus = hasHorseshoe ? 15 : 0;
-    const roll = randomBetween(0, 100) + luckBonus;
+    const luckInfo = getLuckBreakdown(userId);
+    const roll = rollLuck(userId, 0, 100);
 
-    // 0–25: Rejection
+    // 0–25: Rejection (If roll < 25)
     if (roll <= 25) {
       const npc = pickRandom(REJECTION_NPCS);
       const xpRes = addXp(userId, randomBetween(10, 15));
@@ -59,9 +59,9 @@ export const beg = {
     if (roll <= 90) {
       earnedCoins = randomBetween(250, 1200);
     } else {
-      // 91+: Big generous donor + 25% item chance
-      earnedCoins = randomBetween(1500, 3000);
-      if (Math.random() < 0.25) {
+      // 91+: Big generous donor + item chance
+      earnedCoins = randomBetween(1500, 3500);
+      if (checkDropChance(userId, 0.25)) {
         const bonusItem = pickRandom(['garbage', 'worm']);
         inventoryRepo.addItem(userId, bonusItem, 1);
         const itemObj = items[bonusItem];
@@ -69,11 +69,22 @@ export const beg = {
       }
     }
 
+    // Multiply coins slightly if luck is high
+    if (luckInfo.totalBonus > 0) {
+      earnedCoins = Math.floor(earnedCoins * (1 + (luckInfo.totalBonus / 200)));
+    }
+
     userRepo.updateWallet(userId, earnedCoins);
     const xpResult = addXp(userId);
 
-    const horseshoeNotice = hasHorseshoe ? ' <i>(🧲 Horseshoe bonus applied!)</i>' : '';
-    const replyText = `🥺 <b>${donor}</b> took pity on you and gave you <b>${formatCoins(earnedCoins)}</b>!${horseshoeNotice}\n` +
+    let luckNotice = '';
+    if (luckInfo.customLuck > 0) {
+      luckNotice = ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
+    } else if (luckInfo.hasHorseshoe) {
+      luckNotice = ' <i>(🧲 Horseshoe bonus applied!)</i>';
+    }
+
+    const replyText = `🥺 <b>${donor}</b> took pity on you and gave you <b>${formatCoins(earnedCoins)}</b>!${luckNotice}\n` +
       `⭐ <b>XP Earned:</b> +${xpResult.earnedXp} XP` +
       extraItemMsg +
       (xpResult.message ? `\n${xpResult.message}` : '');

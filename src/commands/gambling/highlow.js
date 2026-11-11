@@ -1,6 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, randomBetween } from '../../utils/formatters.js';
 
 // In-memory sessions: userId -> { hint, secret }
@@ -10,7 +11,7 @@ export const highlow = {
   name: 'highlow',
   aliases: ['hl'],
   description: 'Guess whether the secret mystery number is higher, lower, or jackpot',
-  cooldown: 20,
+  cooldown: 20, // 10s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -48,7 +49,19 @@ export const highlow = {
     }
 
     activeHLSessions.delete(targetUserId);
-    const { hint, secret } = session;
+    let { hint, secret } = session;
+    const luckInfo = getLuckBreakdown(targetUserId);
+
+    // LuckEngine: Tilt mystery number if player has active luck
+    if (luckInfo.totalBonus > 0) {
+      if (choice === 'jackpot' && luckInfo.customLuck >= 50 && Math.random() < 0.50) {
+        secret = hint;
+      } else if (choice === 'higher' && secret <= hint && Math.random() < Math.min(0.85, luckInfo.totalBonus / 120)) {
+        secret = Math.min(100, hint + randomBetween(1, 15));
+      } else if (choice === 'lower' && secret >= hint && Math.random() < Math.min(0.85, luckInfo.totalBonus / 120)) {
+        secret = Math.max(1, hint - randomBetween(1, 15));
+      }
+    }
 
     let isWin = false;
     let isJackpot = false;
@@ -68,14 +81,17 @@ export const highlow = {
         reward = 25000;
         winTitle = '🎯 <b>JACKPOT EXACT MATCH!</b> 🌟';
       } else {
-        reward = randomBetween(800, 2000);
+        const base = randomBetween(800, 2000);
+        reward = Math.floor(base * (1 + (luckInfo.totalBonus / 200)));
         winTitle = '🎉 <b>CORRECT GUESS!</b>';
       }
 
       userRepo.updateWallet(targetUserId, reward);
       const xpRes = addXp(targetUserId, isJackpot ? 100 : 25);
 
-      const msg = `${winTitle}\n\n` +
+      let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
+
+      const msg = `${winTitle}${luckTag}\n\n` +
         `• Hint Number: <b>${hint}</b>\n` +
         `• Secret Number: <b>${secret}</b>\n` +
         `• Your Guess: <i>${choice.toUpperCase()}</i>\n\n` +

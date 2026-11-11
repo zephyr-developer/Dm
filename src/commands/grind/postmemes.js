@@ -2,6 +2,7 @@ import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown, rollLuck, checkDropChance } from '../../utils/luckEngine.js';
 import { items } from '../../config/items.js';
 import { formatCoins, randomBetween, pickRandom } from '../../utils/formatters.js';
 
@@ -9,7 +10,7 @@ export const postmemes = {
   name: 'postmemes',
   aliases: ['pm'],
   description: 'Post memes on social media from your laptop for ad revenue and fame',
-  cooldown: 35,
+  cooldown: 35, // 17s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -44,14 +45,15 @@ export const postmemes = {
     const genre = parts[1];
     const targetUserId = Number(parts[2]);
 
-    const hasHorseshoe = inventoryRepo.hasBuff(targetUserId, 'horseshoe');
-    const roll = randomBetween(1, 100) + (hasHorseshoe ? 10 : 0);
+    const luckInfo = getLuckBreakdown(targetUserId);
+    const roll = rollLuck(targetUserId, 1, 100);
 
-    // 1. 20% Downvoted (Roll <= 20)
+    // 1. Downvoted (Roll <= 20)
     if (roll <= 20) {
       let laptopBroke = false;
-      // 35% chance laptop breaks on rage
-      if (Math.random() < 0.35) {
+      // 35% chance laptop breaks on rage (reduced by luck)
+      const breakProb = Math.max(0.05, 0.35 - (luckInfo.totalBonus / 500));
+      if (Math.random() < breakProb) {
         inventoryRepo.removeItem(targetUserId, 'laptop', 1);
         laptopBroke = true;
       }
@@ -71,29 +73,37 @@ export const postmemes = {
       return ctx.answerCallbackQuery({ text: 'Downvoted!' });
     }
 
-    // 2. 15% Viral (Roll > 85)
-    if (roll > 85) {
-      const viralCoins = randomBetween(3500, 7000);
+    // 2. Viral Meme (Roll > 80)
+    if (roll > 80) {
+      const baseCoins = randomBetween(3500, 7000);
+      const viralCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 150)));
       userRepo.updateWallet(targetUserId, viralCoins);
 
-      const bonusItemId = pickRandom(['banknote', 'ducttape']);
-      inventoryRepo.addItem(targetUserId, bonusItemId, 1);
-      const bonusItem = items[bonusItemId];
+      let bonusText = '';
+      if (checkDropChance(targetUserId, 0.60)) {
+        const bonusItemId = pickRandom(['banknote', 'ducttape']);
+        inventoryRepo.addItem(targetUserId, bonusItemId, 1);
+        const bonusItem = items[bonusItemId];
+        bonusText = `\n🎁 <b>Sponsorship Gift:</b> 1x ${bonusItem.emoji} <b>${bonusItem.name}</b>`;
+      }
 
       const xpRes = addXp(targetUserId, randomBetween(35, 55));
-      const viralText = `🚀 <b>VIRAL EXPLOSION!</b>\n` +
+      let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
+
+      const viralText = `🚀 <b>VIRAL EXPLOSION!</b>${luckTag}\n` +
         `Your <b>${genre}</b> meme hit the front page of r/all and gathered 50,000 retweets!\n\n` +
-        `💰 <b>Ad Revenue:</b> +${formatCoins(viralCoins)}\n` +
-        `🎁 <b>Sponsorship Gift:</b> 1x ${bonusItem.emoji} <b>${bonusItem.name}</b>\n` +
-        `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
+        `💰 <b>Ad Revenue:</b> +${formatCoins(viralCoins)}` +
+        bonusText +
+        `\n⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
         (xpRes.message ? `\n${xpRes.message}` : '');
 
       await ctx.editMessageText(viralText, { parse_mode: 'HTML' });
       return ctx.answerCallbackQuery({ text: 'VIRAL MEME!' });
     }
 
-    // 3. 65% Decent engagement (Roll 21–85)
-    const earnedCoins = randomBetween(800, 2500);
+    // 3. Decent engagement
+    const baseCoins = randomBetween(800, 2500);
+    const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
     userRepo.updateWallet(targetUserId, earnedCoins);
     const xpRes = addXp(targetUserId, randomBetween(20, 35));
 

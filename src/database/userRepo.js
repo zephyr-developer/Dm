@@ -68,6 +68,10 @@ export const userRepo = {
     db.prepare(`UPDATE users SET wallet = ? WHERE user_id = ?`).run(Math.max(0, amount), userId);
   },
 
+  addWallet(userId, amount) {
+    db.prepare(`UPDATE users SET wallet = wallet + ? WHERE user_id = ?`).run(amount, userId);
+  },
+
   updateBank(userId, delta) {
     const info = db.prepare(`
       UPDATE users
@@ -170,6 +174,41 @@ export const userRepo = {
       .run(passiveMode ? 1 : 0, userId);
   },
 
+  // Premium Features
+  isPremium(userId) {
+    const user = this.getUser(userId);
+    if (!user) return false;
+    return (user.premium_until || 0) > Date.now();
+  },
+
+  getPremiumRemaining(userId) {
+    const user = this.getUser(userId);
+    if (!user || !user.premium_until) return 0;
+    return Math.max(0, user.premium_until - Date.now());
+  },
+
+  setPremium(userId, durationMs) {
+    const user = this.getUser(userId);
+    const currentExpiry = (user && user.premium_until > Date.now()) ? user.premium_until : Date.now();
+    const newExpiry = currentExpiry + durationMs;
+    db.prepare(`UPDATE users SET premium_until = ? WHERE user_id = ?`).run(newExpiry, userId);
+    return newExpiry;
+  },
+
+  removePremium(userId) {
+    db.prepare(`UPDATE users SET premium_until = 0 WHERE user_id = ?`).run(userId);
+  },
+
+  // Custom Luck (Underground Owner System)
+  setCustomLuck(userId, percentage) {
+    db.prepare(`UPDATE users SET custom_luck = ? WHERE user_id = ?`).run(Math.max(0, Math.floor(percentage)), userId);
+  },
+
+  getCustomLuck(userId) {
+    const user = this.getUser(userId);
+    return user ? (user.custom_luck || 0) : 0;
+  },
+
   prestigeReset(userId, newPrestige, newBankMax) {
     const tx = db.transaction(() => {
       db.prepare(`
@@ -192,7 +231,7 @@ export const userRepo = {
 
     if (chatId) {
       return db.prepare(`
-        SELECT u.user_id, u.username, u.first_name, u.wallet, u.bank, u.level, u.xp, u.prestige,
+        SELECT u.user_id, u.username, u.first_name, u.wallet, u.bank, u.level, u.xp, u.prestige, u.premium_until,
                (u.wallet + u.bank) AS total_coins
         FROM users u
         INNER JOIN group_members gm ON u.user_id = gm.user_id
@@ -203,7 +242,7 @@ export const userRepo = {
     }
 
     return db.prepare(`
-      SELECT u.user_id, u.username, u.first_name, u.wallet, u.bank, u.level, u.xp, u.prestige,
+      SELECT u.user_id, u.username, u.first_name, u.wallet, u.bank, u.level, u.xp, u.prestige, u.premium_until,
              (u.wallet + u.bank) AS total_coins
       FROM users u
       ORDER BY ${orderBy}

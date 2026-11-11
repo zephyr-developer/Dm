@@ -1,5 +1,6 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
+import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins } from '../../utils/formatters.js';
 
 const SUITS = ['♠️', '♥️', '♦️', '♣️'];
@@ -60,7 +61,7 @@ export const blackjack = {
   name: 'blackjack',
   aliases: ['bj'],
   description: 'Play a game of soft-17 Blackjack against the dealer',
-  cooldown: 3,
+  cooldown: 15, // 8s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -106,9 +107,16 @@ export const blackjack = {
     // Deduct bet immediately
     userRepo.updateWallet(userId, -bet);
 
+    const luckInfo = getLuckBreakdown(userId);
     const deck = createDeck();
     const playerCards = [deck.pop(), deck.pop()];
     const dealerCards = [deck.pop(), deck.pop()];
+
+    // If high custom luck (> 50), bias initial hand towards 21
+    if (luckInfo.totalBonus >= 50 && Math.random() < 0.40) {
+      playerCards[0] = { suit: '♠️', val: 'A', score: 11 };
+      playerCards[1] = { suit: '👑', val: 'K', score: 10 };
+    }
 
     const playerScore = calculateHand(playerCards);
 
@@ -168,12 +176,21 @@ export const blackjack = {
     }
 
     const user = userRepo.getUser(targetUserId);
+    const luckInfo = getLuckBreakdown(targetUserId);
 
     // ==========================================
     // ACTION 1: HIT
     // ==========================================
     if (action === 'hit') {
-      game.playerCards.push(game.deck.pop());
+      let drawnCard = game.deck.pop();
+
+      // If high luck and current score <= 11, try to pull a high card
+      const currentScore = calculateHand(game.playerCards);
+      if (luckInfo.totalBonus >= 50 && currentScore <= 11 && Math.random() < 0.60) {
+        drawnCard = { suit: '💎', val: '10', score: 10 };
+      }
+
+      game.playerCards.push(drawnCard);
       const score = calculateHand(game.playerCards);
 
       // BUST!
@@ -216,7 +233,14 @@ export const blackjack = {
 
       userRepo.updateWallet(targetUserId, -game.bet);
       game.bet *= 2;
-      game.playerCards.push(game.deck.pop());
+
+      let doubleCard = game.deck.pop();
+      const currentScore = calculateHand(game.playerCards);
+      if (luckInfo.totalBonus >= 50 && currentScore <= 11 && Math.random() < 0.70) {
+        doubleCard = { suit: '👑', val: '10', score: 10 };
+      }
+
+      game.playerCards.push(doubleCard);
 
       const score = calculateHand(game.playerCards);
       if (score > 21) {
@@ -231,7 +255,6 @@ export const blackjack = {
         return ctx.answerCallbackQuery({ text: 'Busted on Double Down!' });
       }
 
-      // Automatically stand after receiving exactly 1 card
       return resolveDealerTurn(ctx, game, targetUserId);
     }
 
@@ -247,18 +270,23 @@ export const blackjack = {
 async function resolveDealerTurn(ctx, game, targetUserId) {
   activeGames.delete(targetUserId);
 
+  const luckInfo = getLuckBreakdown(targetUserId);
   const playerScore = calculateHand(game.playerCards);
   let dealerScore = calculateHand(game.dealerCards);
 
-  // Dealer hits on soft 17: hits while dealerScore < 17
+  // Dealer hits on soft 17
   while (dealerScore < 17) {
-    game.dealerCards.push(game.deck.pop());
+    let nextCard = game.deck.pop();
+    // High luck makes dealer more likely to bust if dealer is at 12-16
+    if (luckInfo.totalBonus >= 50 && dealerScore >= 12 && Math.random() < 0.50) {
+      nextCard = { suit: '♠️', val: '10', score: 10 };
+    }
+    game.dealerCards.push(nextCard);
     dealerScore = calculateHand(game.dealerCards);
   }
 
   let outcomeTitle = '';
   let payout = 0;
-  const user = userRepo.getUser(targetUserId);
 
   if (dealerScore > 21) {
     outcomeTitle = '🎉 <b>DEALER BUSTED! YOU WIN!</b>';

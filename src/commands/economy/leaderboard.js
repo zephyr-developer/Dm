@@ -20,12 +20,14 @@ function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
     rows.forEach((row, index) => {
       const medals = ['🥇', '🥈', '🥉'];
       const rankBadge = medals[index] || `<b>#${index + 1}</b>`;
+      const isPrem = (row.premium_until || 0) > Date.now();
+      const premBadge = isPrem ? ' 💎' : '';
       const name = sanitizeHtml(row.first_name || row.username || `Player ${row.user_id}`);
       const valStr = isCoins
         ? formatCoins(row.total_coins || (row.wallet + row.bank))
         : `Lvl ${row.level} (${formatNumber(row.xp)} XP)`;
 
-      text += `${rankBadge} <b>${name}</b> — ${valStr}\n`;
+      text += `${rankBadge} <b>${name}</b>${premBadge} — ${valStr}\n`;
     });
   }
 

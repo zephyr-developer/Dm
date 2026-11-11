@@ -19,7 +19,7 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = ON');
 
-// Initialize schema
+// Initialize schema & migrate fields
 export function initDatabase() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -36,7 +36,9 @@ export function initDatabase() {
       work_shifts INTEGER DEFAULT 0,
       streak_daily INTEGER DEFAULT 0,
       last_daily INTEGER DEFAULT 0,
-      passive_mode INTEGER DEFAULT 0
+      passive_mode INTEGER DEFAULT 0,
+      premium_until INTEGER DEFAULT 0,
+      custom_luck INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS inventories (
@@ -74,6 +76,15 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_users_networth ON users(wallet, bank);
     CREATE INDEX IF NOT EXISTS idx_active_buffs_expiry ON active_buffs(expires_at);
   `);
+
+  // Auto-migration for existing tables: check for premium_until & custom_luck
+  const tableCols = db.pragma('table_info(users)').map(c => c.name);
+  if (!tableCols.includes('premium_until')) {
+    db.exec(`ALTER TABLE users ADD COLUMN premium_until INTEGER DEFAULT 0`);
+  }
+  if (!tableCols.includes('custom_luck')) {
+    db.exec(`ALTER TABLE users ADD COLUMN custom_luck INTEGER DEFAULT 0`);
+  }
 }
 
 initDatabase();

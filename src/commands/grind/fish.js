@@ -2,6 +2,7 @@ import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
+import { getLuckBreakdown, checkDropChance } from '../../utils/luckEngine.js';
 import { items } from '../../config/items.js';
 import { formatCoins, randomBetween, pickRandom } from '../../utils/formatters.js';
 
@@ -9,7 +10,7 @@ export const fish = {
   name: 'fish',
   aliases: [],
   description: 'Cast your fishing line into the water and reel in exotic fish',
-  cooldown: 35,
+  cooldown: 35, // 17s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
@@ -47,17 +48,19 @@ export const fish = {
     const guaranteedDir = parts[2];
     const targetUserId = Number(parts[3]);
 
-    const hasHorseshoe = inventoryRepo.hasBuff(targetUserId, 'horseshoe');
+    const luckInfo = getLuckBreakdown(targetUserId);
 
-    // Guaranteed if matched, otherwise 50% chance (or 65% with horseshoe)
+    // Guaranteed if matched, otherwise 50% chance (+ luck boost)
     const isGuaranteed = chosenDir === guaranteedDir;
-    const randomPass = Math.random() < (hasHorseshoe ? 0.65 : 0.50);
+    const passChance = Math.min(0.95, 0.50 + (luckInfo.totalBonus / 200));
+    const randomPass = Math.random() < passChance;
     const isCatch = isGuaranteed || randomPass;
 
     if (!isCatch) {
-      // Failed: 5% chance pole breaks
+      // Failed: 5% chance pole breaks (reduced by luck)
       let brokeText = '';
-      if (Math.random() < 0.05) {
+      const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
+      if (Math.random() < breakProb) {
         inventoryRepo.removeItem(targetUserId, 'fishingpole', 1);
         brokeText = `\n\n💥 <b>CRACK!</b> The fierce resistance snapped your 🎣 <b>Fishing Pole in half!</b>`;
       }
@@ -73,16 +76,17 @@ export const fish = {
       return ctx.answerCallbackQuery({ text: 'Fish escaped!' });
     }
 
-    // Success! Check for 1% Kraken (or 3% with horseshoe)
-    const krakenChance = hasHorseshoe ? 0.03 : 0.01;
-    if (Math.random() < krakenChance) {
+    // Success! Check for 1% Kraken (amplified by luckEngine)
+    if (checkDropChance(targetUserId, 0.01)) {
       inventoryRepo.addItem(targetUserId, 'kraken', 1);
-      const bonusCoins = randomBetween(8000, 20000);
+      const bonusCoins = Math.floor(randomBetween(8000, 20000) * (1 + (luckInfo.totalBonus / 200)));
       userRepo.updateWallet(targetUserId, bonusCoins);
       const xpRes = addXp(targetUserId, 100);
 
       const krakenItem = items.kraken;
-      const krakenMsg = `🦑 <b>ABYSSAL KRAKEN REELED IN!</b>\n` +
+      let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
+
+      const krakenMsg = `🦑 <b>ABYSSAL KRAKEN REELED IN!</b>${luckTag}\n` +
         `The ocean roiled as giant tentacles breached the surface! You hauled the mythical sea terror into your vessel!\n\n` +
         `🏆 <b>Catch:</b> 1x ${krakenItem.emoji} <b>${krakenItem.name}</b> (Sell: 🪙 40,000)\n` +
         `🪙 <b>Ocean Bonus:</b> +${formatCoins(bonusCoins)}\n` +
@@ -94,11 +98,12 @@ export const fish = {
     }
 
     // Common vs Tropical Fish
-    const isTropical = Math.random() < 0.35;
+    const isTropical = Math.random() < (0.35 + (luckInfo.totalBonus / 300));
     const fishId = isTropical ? 'tropicalfish' : 'commonfish';
     inventoryRepo.addItem(targetUserId, fishId, 1);
     const fishObj = items[fishId];
-    const coinsFound = randomBetween(200, 800);
+    const baseCoins = randomBetween(200, 800);
+    const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
     userRepo.updateWallet(targetUserId, coinsFound);
     const xpRes = addXp(targetUserId, randomBetween(20, 35));
 

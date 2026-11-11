@@ -4,6 +4,7 @@ import inventoryRepo from '../../database/inventoryRepo.js';
 import cooldownRepo from '../../database/cooldownRepo.js';
 import { handleDeath } from '../../utils/deathEngine.js';
 import { addXp, getXpProgress } from '../../utils/levelEngine.js';
+import { getLuckBreakdown, checkDropChance, rollLuck } from '../../utils/luckEngine.js';
 import { items } from '../../config/items.js';
 import { formatCoins, formatTime, progressBar, randomBetween, pickRandom, sanitizeHtml } from '../../utils/formatters.js';
 import { SEARCH_LOCATIONS } from './search.js';
@@ -16,19 +17,23 @@ function buildFlowDashboard(userId, lastActionReport = null) {
   const xpProg = getXpProgress(user);
   const xpBar = progressBar(xpProg.current, xpProg.max, 8);
   const activeBuffs = inventoryRepo.getActiveBuffs(userId);
+  const isPremium = userRepo.isPremium(userId);
+  const luckInfo = getLuckBreakdown(userId);
 
-  let buffsText = 'None';
-  if (activeBuffs.length > 0) {
-    buffsText = activeBuffs
-      .map(b => `${b.buff_type} (${formatTime(b.remaining_seconds)})`)
-      .join(', ');
-  }
+  let buffsList = [];
+  if (isPremium) buffsList.push('💎 Premium (2x Perks)');
+  if (luckInfo.customLuck > 0) buffsList.push(`🎲 Custom Luck (+${luckInfo.customLuck}%)`);
+  activeBuffs.forEach(b => {
+    buffsList.push(`${b.buff_type.toUpperCase()} (${formatTime(b.remaining_seconds)})`);
+  });
 
-  let text = `⚡ <b>TeleMemer Grinding Flow Dashboard</b>\n` +
+  const buffsText = buffsList.length > 0 ? buffsList.join(' • ') : 'None';
+
+  let text = `⚡ <b>TeleMemer Grinding Flow Dashboard</b>${isPremium ? ' 💎' : ''}\n` +
     `👤 <b>Player:</b> ${sanitizeHtml(user.first_name)} | ⭐ <b>Level:</b> ${user.level} (Prestige: ${user.prestige})\n` +
     `👛 <b>Wallet:</b> ${formatCoins(user.wallet)} | 🏦 <b>Bank:</b> ${formatCoins(user.bank)} / ${formatCoins(user.bank_max)}\n` +
     `⭐ <b>XP Progress:</b> ${xpBar} (${xpProg.current}/${xpProg.max})\n` +
-    `✨ <b>Active Buffs:</b> ${buffsText}\n`;
+    `✨ <b>Active Boosts:</b> ${buffsText}\n`;
 
   if (lastActionReport) {
     text += `━━━━━━━━━━━━━━━━━━━━━\n${lastActionReport}\n━━━━━━━━━━━━━━━━━━━━━\n`;
@@ -98,7 +103,7 @@ export const flow = {
       return ctx.answerCallbackQuery({ text: 'Dashboard refreshed!' });
     }
 
-    // Cooldown duration maps
+    // Base cooldown duration map
     const cooldownMap = {
       beg: 25,
       search: 30,
@@ -109,28 +114,31 @@ export const flow = {
       postmemes: 35
     };
 
-    const cooldownSecs = cooldownMap[action] || 30;
+    const baseCooldownSecs = cooldownMap[action] || 30;
     const cd = cooldownRepo.checkCooldown(targetUserId, action);
     if (cd.onCooldown) {
+      const isPrem = userRepo.isPremium(targetUserId);
+      const tip = isPrem ? '' : ` (💎 Premium cooldown is ${Math.max(3, Math.floor(baseCooldownSecs * 0.5))}s!)`;
       return ctx.answerCallbackQuery({
-        text: `⏳ Cooldown active for ${action}! Wait ${formatTime(cd.remainingSeconds)}.`,
+        text: `⏳ Cooldown active for ${action}! Wait ${formatTime(cd.remainingSeconds)}.${tip}`,
         show_alert: true
       });
     }
 
-    const hasHorseshoe = inventoryRepo.hasBuff(targetUserId, 'horseshoe');
+    const luckInfo = getLuckBreakdown(targetUserId);
     let report = '';
 
     // ==========================================
     // ACTION 1: BEG
     // ==========================================
     if (action === 'beg') {
-      const roll = randomBetween(0, 100) + (hasHorseshoe ? 15 : 0);
+      const roll = rollLuck(targetUserId, 0, 100);
       if (roll <= 25) {
         const xpRes = addXp(targetUserId, 10);
         report = `🥺 <b>A grumpy stranger ignored you!</b> Earned $0. (+${xpRes.earnedXp} XP)`;
       } else {
-        const earned = roll <= 90 ? randomBetween(250, 1200) : randomBetween(1500, 3000);
+        const baseEarned = roll <= 90 ? randomBetween(250, 1200) : randomBetween(1500, 3500);
+        const earned = Math.floor(baseEarned * (1 + (luckInfo.totalBonus / 200)));
         userRepo.updateWallet(targetUserId, earned);
         const xpRes = addXp(targetUserId);
         report = `🥺 <b>Someone spared some coins!</b> Received <b>${formatCoins(earned)}</b> (+${xpRes.earnedXp} XP)`;
@@ -143,7 +151,7 @@ export const flow = {
     else if (action === 'search') {
       const locKey = pickRandom(Object.keys(SEARCH_LOCATIONS));
       const loc = SEARCH_LOCATIONS[locKey];
-      const deathChance = Math.max(0.02, loc.deathChance - (hasHorseshoe ? 0.05 : 0));
+      const deathChance = Math.max(0.01, loc.deathChance - (luckInfo.totalBonus / 400));
 
       if (Math.random() < deathChance) {
         const deathRes = await handleDeath(ctx, targetUserId, loc.deathReason);
@@ -151,10 +159,11 @@ export const flow = {
           ? `🛟 <b>Almost died searching ${loc.name}!</b> Life Saver saved your soul.`
           : `💀 <b>Died searching ${loc.name}!</b> Lost ${formatCoins(deathRes.coinsLost)}.`;
       } else {
-        const earned = hasHorseshoe ? Math.floor(randomBetween(loc.coinRange[0], loc.coinRange[1]) * 1.2) : randomBetween(loc.coinRange[0], loc.coinRange[1]);
+        const baseEarned = randomBetween(loc.coinRange[0], loc.coinRange[1]);
+        const earned = Math.floor(baseEarned * (1 + (luckInfo.totalBonus / 150)));
         userRepo.updateWallet(targetUserId, earned);
         let itemDrop = '';
-        if (loc.itemPool.length > 0 && Math.random() < 0.4) {
+        if (loc.itemPool.length > 0 && checkDropChance(targetUserId, 0.40)) {
           const itm = pickRandom(loc.itemPool);
           inventoryRepo.addItem(targetUserId, itm, 1);
           itemDrop = ` & found 1x <b>${items[itm]?.name || itm}</b>`;
@@ -170,7 +179,7 @@ export const flow = {
     else if (action === 'crime') {
       const crimeKey = pickRandom(Object.keys(CRIMES));
       const crimeObj = CRIMES[crimeKey];
-      const failChance = Math.max(0.05, crimeObj.failChance - (hasHorseshoe ? 0.08 : 0));
+      const failChance = Math.max(0.02, crimeObj.failChance - (luckInfo.totalBonus / 350));
 
       if (Math.random() < failChance) {
         const deathRes = await handleDeath(ctx, targetUserId, crimeObj.failReason);
@@ -178,7 +187,8 @@ export const flow = {
           ? `🛟 <b>Busted during ${crimeObj.name}!</b> Your Life Saver protected you.`
           : `💀 <b>Busted during ${crimeObj.name}!</b> Lost ${formatCoins(deathRes.coinsLost)}.`;
       } else {
-        const earned = hasHorseshoe ? Math.floor(randomBetween(crimeObj.coinRange[0], crimeObj.coinRange[1]) * 1.25) : randomBetween(crimeObj.coinRange[0], crimeObj.coinRange[1]);
+        const baseEarned = randomBetween(crimeObj.coinRange[0], crimeObj.coinRange[1]);
+        const earned = Math.floor(baseEarned * (1 + (luckInfo.totalBonus / 120)));
         userRepo.updateWallet(targetUserId, earned);
         const xpRes = addXp(targetUserId, 30);
         report = `🚨 <b>Pulled off ${crimeObj.emoji} ${crimeObj.name}!</b> Escaped with <b>${formatCoins(earned)}</b>! (+${xpRes.earnedXp} XP)`;
@@ -196,13 +206,15 @@ export const flow = {
         });
       }
 
-      if (Math.random() < 0.05) {
+      const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
+      if (Math.random() < breakProb) {
         inventoryRepo.removeItem(targetUserId, 'shovel', 1);
         report = `💥 <b>SNAP!</b> Your 🪣 <b>Shovel broke</b> while digging!`;
       } else {
         const itm = pickRandom(['worm', 'ant', 'garbage']);
         inventoryRepo.addItem(targetUserId, itm, 1);
-        const earned = randomBetween(500, 1500);
+        const baseEarned = randomBetween(500, 1500);
+        const earned = Math.floor(baseEarned * (1 + (luckInfo.totalBonus / 200)));
         userRepo.updateWallet(targetUserId, earned);
         const xpRes = addXp(targetUserId, 20);
         report = `🪣 <b>Dug into dirt:</b> Found 1x <b>${items[itm].name}</b> & <b>${formatCoins(earned)}</b>! (+${xpRes.earnedXp} XP)`;
@@ -220,12 +232,13 @@ export const flow = {
         });
       }
 
-      if (Math.random() < 0.05) {
+      const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
+      if (Math.random() < breakProb) {
         inventoryRepo.removeItem(targetUserId, 'rifle', 1);
         report = `💥 <b>MISFIRE!</b> Your 🔫 <b>Hunting Rifle backfired and broke!</b>`;
-      } else if (Math.random() < (hasHorseshoe ? 0.03 : 0.01)) {
+      } else if (checkDropChance(targetUserId, 0.01)) {
         inventoryRepo.addItem(targetUserId, 'dragon', 1);
-        const earned = randomBetween(5000, 15000);
+        const earned = Math.floor(randomBetween(5000, 15000) * (1 + (luckInfo.totalBonus / 200)));
         userRepo.updateWallet(targetUserId, earned);
         const xpRes = addXp(targetUserId, 100);
         report = `🐉 <b>MYTHIC DRAGON SLAIN!</b> Found 1x <b>Mythic Dragon</b> & <b>${formatCoins(earned)}</b>! (+${xpRes.earnedXp} XP)`;
@@ -248,19 +261,20 @@ export const flow = {
         });
       }
 
-      if (Math.random() < 0.05) {
+      const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
+      if (Math.random() < breakProb) {
         inventoryRepo.removeItem(targetUserId, 'fishingpole', 1);
         report = `💥 <b>CRACK!</b> Your 🎣 <b>Fishing Pole snapped!</b>`;
-      } else if (Math.random() < (hasHorseshoe ? 0.03 : 0.01)) {
+      } else if (checkDropChance(targetUserId, 0.01)) {
         inventoryRepo.addItem(targetUserId, 'kraken', 1);
-        const earned = randomBetween(8000, 20000);
+        const earned = Math.floor(randomBetween(8000, 20000) * (1 + (luckInfo.totalBonus / 200)));
         userRepo.updateWallet(targetUserId, earned);
         const xpRes = addXp(targetUserId, 100);
         report = `🦑 <b>ABYSSAL KRAKEN REELED IN!</b> Added 1x <b>Kraken</b> & <b>${formatCoins(earned)}</b>! (+${xpRes.earnedXp} XP)`;
       } else {
-        const fishId = Math.random() < 0.35 ? 'tropicalfish' : 'commonfish';
+        const fishId = Math.random() < (0.35 + (luckInfo.totalBonus / 300)) ? 'tropicalfish' : 'commonfish';
         inventoryRepo.addItem(targetUserId, fishId, 1);
-        const earned = randomBetween(200, 800);
+        const earned = Math.floor(randomBetween(200, 800) * (1 + (luckInfo.totalBonus / 200)));
         userRepo.updateWallet(targetUserId, earned);
         const xpRes = addXp(targetUserId, 25);
         report = `🎣 <b>Reeled in:</b> 1x ${items[fishId].emoji} <b>${items[fishId].name}</b> & <b>${formatCoins(earned)}</b>! (+${xpRes.earnedXp} XP)`;
@@ -278,31 +292,32 @@ export const flow = {
         });
       }
 
-      const roll = randomBetween(1, 100) + (hasHorseshoe ? 10 : 0);
+      const roll = rollLuck(targetUserId, 1, 100);
       if (roll <= 20) {
-        if (Math.random() < 0.35) {
+        const breakProb = Math.max(0.05, 0.35 - (luckInfo.totalBonus / 500));
+        if (Math.random() < breakProb) {
           inventoryRepo.removeItem(targetUserId, 'laptop', 1);
           report = `📉 <b>Downvoted!</b> You rage-smashed your 💻 <b>Laptop</b>!`;
         } else {
           report = `📉 <b>Downvoted!</b> Your meme was called cringe and deleted.`;
         }
-      } else if (roll > 85) {
-        const earned = randomBetween(3500, 7000);
+      } else if (roll > 80) {
+        const earned = Math.floor(randomBetween(3500, 7000) * (1 + (luckInfo.totalBonus / 150)));
         userRepo.updateWallet(targetUserId, earned);
         const bonusItm = pickRandom(['banknote', 'ducttape']);
         inventoryRepo.addItem(targetUserId, bonusItm, 1);
         const xpRes = addXp(targetUserId, 40);
         report = `🚀 <b>VIRAL MEME!</b> Earned <b>${formatCoins(earned)}</b> & 1x <b>${items[bonusItm].name}</b>! (+${xpRes.earnedXp} XP)`;
       } else {
-        const earned = randomBetween(800, 2500);
+        const earned = Math.floor(randomBetween(800, 2500) * (1 + (luckInfo.totalBonus / 200)));
         userRepo.updateWallet(targetUserId, earned);
         const xpRes = addXp(targetUserId, 25);
         report = `📈 <b>Decent post!</b> Received <b>${formatCoins(earned)}</b> in ad revenue. (+${xpRes.earnedXp} XP)`;
       }
     }
 
-    // Apply cooldown to action
-    cooldownRepo.setCooldown(targetUserId, action, cooldownSecs);
+    // Apply effective cooldown (50% reduction for Premium)
+    cooldownRepo.applyEffectiveCooldown(targetUserId, action, baseCooldownSecs);
 
     // Rebuild dashboard with updated status and action report
     const { text, keyboard } = buildFlowDashboard(targetUserId, report);

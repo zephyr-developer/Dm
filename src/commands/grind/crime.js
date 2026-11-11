@@ -5,6 +5,7 @@ import { handleDeath } from '../../utils/deathEngine.js';
 import { addXp } from '../../utils/levelEngine.js';
 import { items } from '../../config/items.js';
 import { formatCoins, randomBetween, pickRandom } from '../../utils/formatters.js';
+import { getLuckBreakdown, checkDropChance } from '../../utils/luckEngine.js';
 
 export const CRIMES = {
   taxevasion: {
@@ -103,8 +104,9 @@ export const crime = {
       return ctx.answerCallbackQuery({ text: 'Crime not found!' });
     }
 
-    const hasHorseshoe = inventoryRepo.hasBuff(targetUserId, 'horseshoe');
-    const effectiveFailChance = Math.max(0.05, targetCrime.failChance - (hasHorseshoe ? 0.08 : 0));
+    const luckInfo = getLuckBreakdown(targetUserId);
+    const failReduction = luckInfo.totalBonus / 350;
+    const effectiveFailChance = Math.max(0.02, targetCrime.failChance - failReduction);
 
     // Roll for failure/death
     if (Math.random() < effectiveFailChance) {
@@ -115,12 +117,12 @@ export const crime = {
 
     // Success!
     const baseCoins = randomBetween(targetCrime.coinRange[0], targetCrime.coinRange[1]);
-    const earnedCoins = hasHorseshoe ? Math.floor(baseCoins * 1.25) : baseCoins;
+    const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 120)));
     userRepo.updateWallet(targetUserId, earnedCoins);
 
     let dropMsg = '';
-    // 30% chance for crime item
-    if (targetCrime.itemPool.length > 0 && Math.random() < 0.30) {
+    // 30% base chance for crime item, boosted by luck
+    if (targetCrime.itemPool.length > 0 && checkDropChance(targetUserId, 0.30)) {
       const itmId = pickRandom(targetCrime.itemPool);
       inventoryRepo.addItem(targetUserId, itmId, 1);
       const itm = items[itmId] || { emoji: '📦', name: itmId };
@@ -129,9 +131,16 @@ export const crime = {
 
     const xpRes = addXp(targetUserId, randomBetween(25, 45));
 
+    let luckTag = '';
+    if (luckInfo.customLuck > 0) {
+      luckTag = ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
+    } else if (luckInfo.hasHorseshoe) {
+      luckTag = ' <i>(🧲 Lucky Horseshoe bonus!)</i>';
+    }
+
     const resultMsg = `🚨 <b>CRIME SUCCESSFUL!</b>\n` +
       `You pulled off <b>${targetCrime.emoji} ${targetCrime.name}</b> and walked away with <b>${formatCoins(earnedCoins)}</b>!` +
-      (hasHorseshoe ? ' <i>(🧲 Lucky Horseshoe bonus!)</i>' : '') +
+      luckTag +
       dropMsg +
       `\n⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
       (xpRes.message ? `\n${xpRes.message}` : '');
