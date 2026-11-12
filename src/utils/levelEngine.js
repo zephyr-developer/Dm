@@ -6,8 +6,8 @@ export function getXpThreshold(level) {
   return Math.max(100, Number(level) * 100);
 }
 
-export async function addXp(userId, xpAmount = null) {
-  const earnedXp = xpAmount !== null ? xpAmount : randomBetween(15, 35);
+export async function addXp(userId, baseAmount = null) {
+  const rawBase = baseAmount !== null ? baseAmount : randomBetween(15, 35);
   const client = await getClient();
 
   try {
@@ -17,10 +17,13 @@ export async function addXp(userId, xpAmount = null) {
 
     if (!user) {
       await client.query('COMMIT');
-      return { leveledUp: false, earnedXp, newLevel: 1, message: '' };
+      return { leveledUp: false, earnedXp: rawBase, newLevel: 1, message: '' };
     }
 
-    let currentXp = Number(user.xp || 0) + earnedXp;
+    const prestigeLevel = Number(user.prestige || 0);
+    const finalXp = Math.floor(rawBase * (1 + (prestigeLevel * 0.01)));
+
+    let currentXp = Number(user.xp || 0) + finalXp;
     let currentLevel = Number(user.level || 1);
     let leveledUp = false;
     let totalCoinsRewarded = 0;
@@ -76,7 +79,7 @@ export async function addXp(userId, xpAmount = null) {
 
       return {
         leveledUp: true,
-        earnedXp,
+        earnedXp: finalXp,
         oldLevel,
         newLevel: currentLevel,
         totalCoinsRewarded,
@@ -89,7 +92,7 @@ export async function addXp(userId, xpAmount = null) {
 
       return {
         leveledUp: false,
-        earnedXp,
+        earnedXp: finalXp,
         newLevel: currentLevel,
         message: ''
       };

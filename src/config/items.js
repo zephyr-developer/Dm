@@ -73,6 +73,17 @@ export const items = {
     buffType: 'landmine',
     buffDuration: 86400
   },
+  vaultlock: {
+    id: 'vaultlock',
+    name: 'Vault Lock',
+    emoji: '🏦',
+    description: '/use: Protects your bank from 1 /bankrob attempt. Consumed upon use or broken during a heist.',
+    buyPrice: 50000,
+    sellPrice: 10000,
+    type: 'defense',
+    buffType: 'vaultlock',
+    buffDuration: 86400
+  },
   horseshoe: {
     id: 'horseshoe',
     name: 'Lucky Horseshoe',
@@ -280,6 +291,10 @@ export function getCollectibleItemIds() {
   return Object.values(items)
     .filter(i => i.type === 'collectible')
     .map(i => i.id);
+}
+
+export function getLootItems() {
+  return Object.values(items).filter(i => i.type === 'loot');
 }
 
 export default items;

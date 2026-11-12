@@ -136,7 +136,7 @@ telememer/
 | `/buy` | None | 3s / 3s | Buy items from the shop (`/buy <item> [qty]`) |
 | `/sell` | None | 3s / 3s | Sell items or liquidate all backpack loot (`/sell all`) |
 | `/inventory` | `/inv` | 3s / 3s | Paginated backpack with item details and valuations |
-| `/use` | None | 2s / 2s | Consume items: Bank Notes, Padlocks, Landmines, Apples |
+| `/use` | None | 2s / 2s | Consume items: Bank Notes, Padlocks, Landmines, Vault Locks, Apples |
 | `/craft` | None | 3s / 3s | Forge Adventure Tickets and legendary Pepe Trophies |
 
 ### 5. PvP & Social Commands

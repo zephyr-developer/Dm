@@ -28,6 +28,7 @@ export const use = {
         `• 📜 <code>banknote</code> - Expand bank vault space (+15k to +30k)\n` +
         `• 🔒 <code>padlock</code> - Protect wallet against 1 robbery attempt (24h)\n` +
         `• 💣 <code>landmine</code> - Trap wallet: 50% chance to kill robber (24h)\n` +
+        `• 🏦 <code>vaultlock</code> - Protect bank vault against 1 heist attempt (24h)\n` +
         `• 🧲 <code>horseshoe</code> - +15% luck bonus on grinding (30m)\n` +
         `• 🍎 <code>apple</code> - Protect items from loss on death (24h)\n` +
         `• 💣 <code>coinbomb</code> - Drop 10k–50k coins in chat for first 3 clickers!`,
@@ -87,6 +88,20 @@ export const use = {
         `💣 <b>Landmine Primed!</b>\n` +
         `You rigged an explosive pressure plate inside your pocket lining!\n` +
         `If someone attempts to <code>/rob</code> you in the next <b>24 hours</b>, there is a <b>50% chance</b> it detonates and instantly kills them!`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // ==========================================
+    // 4. VAULT LOCK
+    // ==========================================
+    if (item.id === 'vaultlock') {
+      await inventoryRepo.removeItem(userId, 'vaultlock', 1);
+      const exact24hMs = Date.now() + 24 * 60 * 60 * 1000;
+      await inventoryRepo.setBuff(userId, 'vaultlock', exact24hMs);
+
+      return ctx.reply(
+        `🏦 Your <b>Vault Lock</b> is active! Your bank is protected from the next heist for 24 hours, or until someone attempts to rob it (whichever comes first).`,
         { parse_mode: 'HTML' }
       );
     }

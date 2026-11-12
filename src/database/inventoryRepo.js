@@ -66,8 +66,19 @@ export const inventoryRepo = {
   },
 
   // Active Buffs
-  async setBuff(userId, buffType, durationSeconds) {
-    const expiresAt = Math.floor(Date.now() / 1000) + durationSeconds;
+  async setBuff(userId, buffType, durationOrExpiresAt) {
+    let expiresAt;
+    if (durationOrExpiresAt > 1000000000000) {
+      // Millisecond timestamp (e.g. Date.now() + 24 * 60 * 60 * 1000)
+      expiresAt = Math.floor(durationOrExpiresAt / 1000);
+    } else if (durationOrExpiresAt > 1000000000) {
+      // Second timestamp
+      expiresAt = Math.floor(durationOrExpiresAt);
+    } else {
+      // Duration in seconds (e.g. 86400)
+      expiresAt = Math.floor(Date.now() / 1000) + durationOrExpiresAt;
+    }
+
     const sql = `
       INSERT INTO active_buffs (user_id, buff_type, expires_at)
       VALUES ($1, $2, $3)
@@ -87,7 +98,7 @@ export const inventoryRepo = {
     if (!buff) return false;
 
     if (Number(buff.expires_at) <= now) {
-      await this.removeBuff(userId, buffType);
+      await this.removeActiveBuff(userId, buffType);
       return false;
     }
     return true;
@@ -101,14 +112,18 @@ export const inventoryRepo = {
     );
     const buff = res.rows[0];
     if (!buff || Number(buff.expires_at) <= now) {
-      if (buff) await this.removeBuff(userId, buffType);
+      if (buff) await this.removeActiveBuff(userId, buffType);
       return 0;
     }
     return Number(buff.expires_at) - now;
   },
 
-  async removeBuff(userId, buffType) {
+  async removeActiveBuff(userId, buffType) {
     await query('DELETE FROM active_buffs WHERE user_id = $1 AND buff_type = $2;', [userId, buffType]);
+  },
+
+  async removeBuff(userId, buffType) {
+    return this.removeActiveBuff(userId, buffType);
   },
 
   async getActiveBuffs(userId) {
@@ -129,5 +144,11 @@ export const inventoryRepo = {
     }));
   }
 };
+
+export const removeActiveBuff = inventoryRepo.removeActiveBuff.bind(inventoryRepo);
+export const setBuff = inventoryRepo.setBuff.bind(inventoryRepo);
+export const hasBuff = inventoryRepo.hasBuff.bind(inventoryRepo);
+export const getBuffRemaining = inventoryRepo.getBuffRemaining.bind(inventoryRepo);
+export const getActiveBuffs = inventoryRepo.getActiveBuffs.bind(inventoryRepo);
 
 export default inventoryRepo;

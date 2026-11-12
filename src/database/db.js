@@ -332,7 +332,7 @@ function executeMemoryQuery(text, params = []) {
         return { rows: [{ ...u }], rowCount: 1 };
       }
     }
-    if (norm.includes('SET PRESTIGE = $1')) {
+    if (norm.includes('PRESTIGE = $1') || norm.includes('SET PRESTIGE = $1')) {
       const prestige = Number(params[0]);
       const bankMax = Number(params[1]);
       const userId = Number(params[2]);
@@ -460,9 +460,29 @@ function executeMemoryQuery(text, params = []) {
     return { rows: [], rowCount: 1 };
   }
 
+  if (norm.startsWith('DELETE FROM ACTIVE_BUFFS')) {
+    const userId = Number(params[0]);
+    const buff = params[1] ? String(params[1]) : null;
+    if (buff) {
+      memoryDb.active_buffs.delete(`${userId}:${buff}`);
+    } else {
+      for (const k of Array.from(memoryDb.active_buffs.keys())) {
+        if (k.startsWith(`${userId}:`)) memoryDb.active_buffs.delete(k);
+      }
+    }
+    return { rows: [], rowCount: 1 };
+  }
+
   if (norm.includes('FROM ACTIVE_BUFFS') && norm.includes('WHERE USER_ID = $1')) {
     const userId = Number(params[0]);
     const now = Math.floor(Date.now() / 1000);
+    const specificBuff = norm.includes('BUFF_TYPE = $2') ? String(params[1]) : null;
+
+    if (specificBuff) {
+      const exp = memoryDb.active_buffs.get(`${userId}:${specificBuff}`);
+      return { rows: exp && exp > now ? [{ expires_at: exp }] : [], rowCount: exp && exp > now ? 1 : 0 };
+    }
+
     const buffs = [];
     for (const [k, exp] of memoryDb.active_buffs.entries()) {
       if (k.startsWith(`${userId}:`) && exp > now) {

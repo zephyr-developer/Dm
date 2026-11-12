@@ -40,6 +40,7 @@ const CATALOG_ITEMS: ItemEntry[] = [
   { id: 'lifesaver', name: 'Life Saver', emoji: '🛟', type: 'defense', buyPrice: 50000, sellPrice: 10000, description: 'Auto-shields you from losing coins & items on death.' },
   { id: 'padlock', name: 'Padlock', emoji: '🔒', type: 'defense', buyPrice: 15000, sellPrice: 3000, description: 'Protects wallet against 1 /rob attempt (lasts 24h).' },
   { id: 'landmine', name: 'Landmine', emoji: '💣', type: 'defense', buyPrice: 20000, sellPrice: 4000, description: '50% chance to blow up and kill anyone robbing you (24h).' },
+  { id: 'vaultlock', name: 'Vault Lock', emoji: '🏦', type: 'defense', buyPrice: 50000, sellPrice: 10000, description: 'Protects bank from 1 /bankrob attempt (24h). Consumed on use or broken during heist.' },
   { id: 'horseshoe', name: 'Lucky Horseshoe', emoji: '🧲', type: 'consumable', buyPrice: 35000, sellPrice: 7000, description: '+15% luck bonus on all grinding commands for 30m.' },
   { id: 'banknote', name: 'Bank Note', emoji: '📜', type: 'consumable', buyPrice: 75000, sellPrice: 25000, description: 'Permanently increases bank capacity by +15,000 to +30,000.' },
   { id: 'apple', name: 'Apple', emoji: '🍎', type: 'consumable', buyPrice: 15000, sellPrice: 3000, description: 'Protects all inventory items from loss on death for 24h.' },

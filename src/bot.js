@@ -51,7 +51,13 @@ export function checkButtonOwnership(ctx) {
 
   const parts = data.split(':');
   // If the callback explicitly marks itself as shared (e.g. coinbomb, heist join), allow all
-  if (parts.includes('shared') || parts.includes('public') || parts[0] === 'heist_join' || parts[0] === 'coinbomb_claim') {
+  if (
+    parts.includes('shared') ||
+    parts.includes('public') ||
+    parts[0] === 'heist_join' ||
+    parts[0] === 'coinbomb_claim' ||
+    (parts[0] === 'bankrob' && parts[1] === 'join')
+  ) {
     return true;
   }
 
