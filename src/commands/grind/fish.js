@@ -14,9 +14,9 @@ export const fish = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    if (!inventoryRepo.hasItem(userId, 'fishingpole', 1)) {
+    if (!(await inventoryRepo.hasItem(userId, 'fishingpole', 1))) {
       return ctx.reply(
         `🎣 <b>You need a Fishing Pole to fish!</b>\n` +
         `Visit the shop to purchase one: <code>/buy fishingpole</code> (Cost: 🪙 25,000)`,
@@ -48,7 +48,7 @@ export const fish = {
     const guaranteedDir = parts[2];
     const targetUserId = Number(parts[3]);
 
-    const luckInfo = getLuckBreakdown(targetUserId);
+    const luckInfo = await getLuckBreakdown(targetUserId);
 
     // Guaranteed if matched, otherwise 50% chance (+ luck boost)
     const isGuaranteed = chosenDir === guaranteedDir;
@@ -61,11 +61,11 @@ export const fish = {
       let brokeText = '';
       const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
       if (Math.random() < breakProb) {
-        inventoryRepo.removeItem(targetUserId, 'fishingpole', 1);
+        await inventoryRepo.removeItem(targetUserId, 'fishingpole', 1);
         brokeText = `\n\n💥 <b>CRACK!</b> The fierce resistance snapped your 🎣 <b>Fishing Pole in half!</b>`;
       }
 
-      const xpRes = addXp(targetUserId, 15);
+      const xpRes = await addXp(targetUserId, 15);
       const failText = `🐟 <b>The fish slipped off the hook!</b>\n` +
         `You pulled <i>${chosenDir}</i>, but the slippery beast swam away into the depths.\n` +
         `⭐ +${xpRes.earnedXp} XP` +
@@ -77,11 +77,15 @@ export const fish = {
     }
 
     // Success! Check for 1% Kraken (amplified by luckEngine)
-    if (checkDropChance(targetUserId, 0.01)) {
-      inventoryRepo.addItem(targetUserId, 'kraken', 1);
+    if (await checkDropChance(targetUserId, 0.01)) {
+      await inventoryRepo.addItem(targetUserId, 'kraken', 1);
       const bonusCoins = Math.floor(randomBetween(8000, 20000) * (1 + (luckInfo.totalBonus / 200)));
-      userRepo.updateWallet(targetUserId, bonusCoins);
-      const xpRes = addXp(targetUserId, 100);
+      await userRepo.updateCoins(targetUserId, {
+        walletDelta: bonusCoins,
+        sourceCommand: '/fish',
+        details: 'Caught Legendary Abyssal Kraken'
+      });
+      const xpRes = await addXp(targetUserId, 100);
 
       const krakenItem = items.kraken;
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
@@ -100,12 +104,16 @@ export const fish = {
     // Common vs Tropical Fish
     const isTropical = Math.random() < (0.35 + (luckInfo.totalBonus / 300));
     const fishId = isTropical ? 'tropicalfish' : 'commonfish';
-    inventoryRepo.addItem(targetUserId, fishId, 1);
+    await inventoryRepo.addItem(targetUserId, fishId, 1);
     const fishObj = items[fishId];
     const baseCoins = randomBetween(200, 800);
     const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
-    userRepo.updateWallet(targetUserId, coinsFound);
-    const xpRes = addXp(targetUserId, randomBetween(20, 35));
+    await userRepo.updateCoins(targetUserId, {
+      walletDelta: coinsFound,
+      sourceCommand: '/fish',
+      details: `Reeled in 1x ${fishObj.name}`
+    });
+    const xpRes = await addXp(targetUserId, randomBetween(20, 35));
 
     const catchMsg = `🎣 <b>NICE CATCH!</b>\n` +
       `You reeled with perfect timing and landed 1x ${fishObj.emoji} <b>${fishObj.name}</b>!\n` +

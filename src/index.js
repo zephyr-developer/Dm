@@ -27,13 +27,12 @@ async function bootstrap() {
   console.log('🐸 TeleMemer - 24/7 Telegram RPG & Economy Engine');
   console.log('----------------------------------------------------');
 
-  // 1. Initialize SQLite database schemas
+  // 1. Initialize PostgreSQL database schemas
   try {
-    initDatabase();
-    console.log('✅ SQLite Database initialized successfully (WAL mode enabled).');
+    await initDatabase();
+    console.log('✅ PostgreSQL Database initialized successfully (Zero-Drop policy active).');
   } catch (dbErr) {
-    console.error('❌ Failed to initialize SQLite database:', dbErr);
-    process.exit(1);
+    console.error('❌ Failed to initialize database:', dbErr);
   }
 
   // 2. Dynamically load all command modules and callback handlers
@@ -45,7 +44,7 @@ async function bootstrap() {
   }
 
   // 3. Lightweight Native HTTP Server (for /health and cloud host keep-alive)
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -61,17 +60,33 @@ async function bootstrap() {
 
     if (url.pathname === '/health' || url.pathname === '/api/health') {
       try {
-        const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get()?.count || 0;
-        const totalCoins = db.prepare('SELECT SUM(wallet + bank) as total FROM users').get()?.total || 0;
-        const groupCount = db.prepare('SELECT COUNT(DISTINCT chat_id) as count FROM group_members').get()?.count || 0;
-        const premiumCount = db.prepare('SELECT COUNT(*) as count FROM users WHERE premium_until > ?').get(Date.now())?.count || 0;
+        let userCount = 0;
+        let totalCoins = 0;
+        let groupCount = 0;
+        let premiumCount = 0;
+
+        try {
+          const userRes = await db.query('SELECT COUNT(*) as count FROM users');
+          userCount = Number(userRes.rows[0]?.count || 0);
+
+          const coinsRes = await db.query('SELECT SUM(wallet + bank) as total FROM users');
+          totalCoins = Number(coinsRes.rows[0]?.total || 0);
+
+          const groupRes = await db.query('SELECT COUNT(DISTINCT chat_id) as count FROM group_members');
+          groupCount = Number(groupRes.rows[0]?.count || 0);
+
+          const premRes = await db.query('SELECT COUNT(*) as count FROM users WHERE premium_until > $1', [Date.now()]);
+          premiumCount = Number(premRes.rows[0]?.count || 0);
+        } catch (dbErr) {
+          // Keep health response alive even if db is connecting
+        }
 
         const responsePayload = JSON.stringify({
           status: 'online',
           app: 'TeleMemer',
           uptime: process.uptime(),
           botConnected: Boolean(BOT_TOKEN && !BOT_TOKEN.includes('1234567890') && !BOT_TOKEN.includes('DUMMY')),
-          database: 'connected (WAL)',
+          database: db.isPostgresConfigured ? 'PostgreSQL (Persistent)' : 'In-Memory Dev Mode',
           stats: {
             registeredUsers: userCount,
             activeGroups: groupCount,
@@ -136,8 +151,8 @@ async function bootstrap() {
   const shutdown = () => {
     console.log('🛑 Shutting down TeleMemer gracefully...');
     server.close(() => {
-      bot.stop().then(() => {
-        db.close();
+      bot.stop().then(async () => {
+        if (db.pool) await db.pool.end().catch(() => {});
         console.log('👋 Database and bot connections closed safely.');
         process.exit(0);
       }).catch(() => process.exit(0));

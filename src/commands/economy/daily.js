@@ -11,10 +11,10 @@ export const daily = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const now = Math.floor(Date.now() / 1000);
-    const lastClaim = user.last_daily || 0;
+    const lastClaim = Number(user.last_daily || 0);
     const oneDay = 86400;
     const twoDays = 172800;
 
@@ -34,10 +34,10 @@ export const daily = {
     // Determine streak
     let newStreak = 1;
     if (lastClaim > 0 && timeSinceLastClaim <= twoDays) {
-      newStreak = (user.streak_daily || 0) + 1;
+      newStreak = (Number(user.streak_daily) || 0) + 1;
     }
 
-    const isPremium = userRepo.isPremium(userId);
+    const isPremium = await userRepo.isPremium(userId);
 
     // Calculate reward: 15,000 + (streak * 2,000), doubled if Premium!
     const baseReward = 15000;
@@ -46,19 +46,23 @@ export const daily = {
     const totalCoins = isPremium ? standardTotal * 2 : standardTotal;
 
     // Save streak & timestamp
-    userRepo.updateDailyStreak(userId, newStreak, now);
-    userRepo.updateWallet(userId, totalCoins);
+    await userRepo.updateDailyStreak(userId, newStreak, now);
+    await userRepo.updateCoins(userId, {
+      walletDelta: totalCoins,
+      sourceCommand: '/daily',
+      details: `Daily Claim (${newStreak}d streak${isPremium ? ' • 2x VIP' : ''})`
+    });
 
     // Every 7th day, award 1x banknote
     let specialRewardText = '';
     if (newStreak % 7 === 0) {
       const notesToGive = isPremium ? 2 : 1;
-      inventoryRepo.addItem(userId, 'banknote', notesToGive);
+      await inventoryRepo.addItem(userId, 'banknote', notesToGive);
       specialRewardText = `\n🎁 <b>7-DAY STREAK BONUS:</b> You received <b>${notesToGive}x</b> 📜 <b>Bank Note</b>!`;
     }
 
     // Add XP
-    const xpResult = addXp(userId, isPremium ? 80 : 50);
+    const xpResult = await addXp(userId, isPremium ? 80 : 50);
 
     const premiumText = isPremium ? '\n💎 <b>2x PREMIUM MULTIPLIER APPLIED!</b>' : '\n💡 <i>Tip: Premium members get 2x Daily Coins!</i>';
 

@@ -46,7 +46,7 @@ export const scratch = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     if (activeScratchCards.has(userId)) {
       return ctx.reply('🎫 You already have an active scratchcard ticket! Finish scratching it first.');
@@ -86,11 +86,15 @@ export const scratch = {
       return ctx.reply(`💸 You do not have enough coins in your wallet! (Wallet: ${formatCoins(user.wallet)})`);
     }
 
-    // Deduct bet immediately
-    userRepo.updateWallet(userId, -bet);
+    // Deduct bet immediately with currency log
+    await userRepo.updateCoins(userId, {
+      walletDelta: -bet,
+      sourceCommand: '/scratch',
+      details: `Scratchcard Bet: 🪙 ${bet.toLocaleString()}`
+    });
 
     // Apply Luck influence to board multipliers
-    const luckInfo = getLuckBreakdown(userId);
+    const luckInfo = await getLuckBreakdown(userId);
     let pool = [...MULTIPLIER_POOL];
     if (luckInfo.totalBonus >= 50) {
       // High luck (Horseshoe / Clover / Admin Luck): Replace skull with massive 5x/10x bonus
@@ -153,7 +157,8 @@ export const scratch = {
     if (value === 'SKULL') {
       activeScratchCards.delete(targetUserId);
       const finishedKeyboard = buildScratchKeyboard(targetUserId, session.board, session.revealed, true);
-      const updatedWallet = userRepo.getUser(targetUserId)?.wallet || 0;
+      const updatedUser = await userRepo.getUser(targetUserId);
+      const updatedWallet = updatedUser?.wallet || 0;
 
       const bustMsg = `💀 <b>BOOM! YOU HIT THE SKULL!</b>\n\n` +
         `The cursed skull destroyed your scratchcard instantly!\n` +
@@ -176,11 +181,16 @@ export const scratch = {
       const payout = Math.floor(session.bet * totalMult);
 
       if (payout > 0) {
-        userRepo.updateWallet(targetUserId, payout);
+        await userRepo.updateCoins(targetUserId, {
+          walletDelta: payout,
+          sourceCommand: '/scratch',
+          details: `Scratchcard Payout (${totalMult}x Multiplier)`
+        });
       }
 
-      const xpRes = addXp(targetUserId, 30);
-      const updatedWallet = userRepo.getUser(targetUserId)?.wallet || 0;
+      const xpRes = await addXp(targetUserId, 30);
+      const updatedUser = await userRepo.getUser(targetUserId);
+      const updatedWallet = updatedUser?.wallet || 0;
       const finishedKeyboard = buildScratchKeyboard(targetUserId, session.board, session.revealed, true);
 
       const winTitle = totalMult >= 3 ? '🎉 <b>MASSIVE SCRATCHCARD WIN!</b>' : '🎫 <b>SCRATCHCARD FINISHED!</b>';

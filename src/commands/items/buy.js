@@ -11,7 +11,7 @@ export const buy = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.trim().split(/\s+/).slice(1);
     if (args.length === 0) {
@@ -59,7 +59,7 @@ export const buy = {
     }
 
     const totalCost = item.buyPrice * quantity;
-    if (user.wallet < totalCost) {
+    if (Number(user.wallet || 0) < totalCost) {
       return ctx.reply(
         `💸 <b>Insufficient Funds!</b>\n` +
         `To buy <b>${quantity}x ${item.emoji} ${item.name}</b>, you need <b>${formatCoins(totalCost)}</b>.\n` +
@@ -69,15 +69,19 @@ export const buy = {
     }
 
     // Deduct coins & add items
-    userRepo.updateWallet(userId, -totalCost);
-    inventoryRepo.addItem(userId, item.id, quantity);
-    const newQuantity = inventoryRepo.getItem(userId, item.id);
+    const updated = await userRepo.updateCoins(userId, {
+      walletDelta: -totalCost,
+      sourceCommand: '/buy',
+      details: `Bought ${quantity}x ${item.name} (${item.emoji})`
+    });
+    await inventoryRepo.addItem(userId, item.id, quantity);
+    const newQuantity = await inventoryRepo.getItem(userId, item.id);
 
     return ctx.reply(
       `✅ <b>Purchase Complete!</b>\n` +
       `Bought <b>${quantity}x ${item.emoji} ${item.name}</b> for <b>${formatCoins(totalCost)}</b>.\n\n` +
       `🎒 <b>Now in Backpack:</b> ${newQuantity}x ${item.name}\n` +
-      `👛 <b>Remaining Wallet:</b> ${formatCoins(user.wallet - totalCost)}`,
+      `👛 <b>Remaining Wallet:</b> ${formatCoins(updated.wallet)}`,
       { parse_mode: 'HTML' }
     );
   }

@@ -13,10 +13,10 @@ export const dig = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     // Verify user owns a shovel
-    if (!inventoryRepo.hasItem(userId, 'shovel', 1)) {
+    if (!(await inventoryRepo.hasItem(userId, 'shovel', 1))) {
       return ctx.reply(
         `🪣 <b>You need a Shovel to dig!</b>\n` +
         `Visit the shop to purchase one: <code>/buy shovel</code> (Cost: 🪙 25,000)`,
@@ -24,14 +24,14 @@ export const dig = {
       );
     }
 
-    const luckInfo = getLuckBreakdown(userId);
-    const roll = rollLuck(userId, 1, 100);
+    const luckInfo = await getLuckBreakdown(userId);
+    const roll = await rollLuck(userId, 1, 100);
 
     // Break chance (reduced if high luck)
     const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
     let shovelBroke = false;
     if (Math.random() < breakProb) {
-      inventoryRepo.removeItem(userId, 'shovel', 1);
+      await inventoryRepo.removeItem(userId, 'shovel', 1);
       shovelBroke = true;
     }
 
@@ -41,7 +41,7 @@ export const dig = {
 
     // Outcome 1: Nothing (Roll <= 20)
     if (roll <= 20) {
-      const xpRes = addXp(userId, 15);
+      const xpRes = await addXp(userId, 15);
       return ctx.reply(
         `🪣 You dug a giant hole in the mud and found absolutely nothing but wet dirt.\n` +
         `⭐ +${xpRes.earnedXp} XP` +
@@ -58,9 +58,13 @@ export const dig = {
       const baseCoins = randomBetween(1500, 3500);
       const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
 
-      inventoryRepo.addItem(userId, rareItemId, 1);
-      userRepo.updateWallet(userId, coinsFound);
-      const xpRes = addXp(userId, randomBetween(30, 45));
+      await inventoryRepo.addItem(userId, rareItemId, 1);
+      await userRepo.updateCoins(userId, {
+        walletDelta: coinsFound,
+        sourceCommand: '/dig',
+        details: `Unearthed 1x ${rareItem.name}`
+      });
+      const xpRes = await addXp(userId, randomBetween(30, 45));
 
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
@@ -82,9 +86,13 @@ export const dig = {
     const baseCoins = randomBetween(500, 1500);
     const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
 
-    inventoryRepo.addItem(userId, commonItemId, 1);
-    userRepo.updateWallet(userId, coinsFound);
-    const xpRes = addXp(userId, randomBetween(20, 30));
+    await inventoryRepo.addItem(userId, commonItemId, 1);
+    await userRepo.updateCoins(userId, {
+      walletDelta: coinsFound,
+      sourceCommand: '/dig',
+      details: `Unearthed 1x ${commonItem.name}`
+    });
+    const xpRes = await addXp(userId, randomBetween(20, 30));
 
     return ctx.reply(
       `🪣 You dug into the dirt and unearthed 1x ${commonItem.emoji} <b>${commonItem.name}</b> and <b>${formatCoins(coinsFound)}</b>!\n` +

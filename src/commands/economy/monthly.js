@@ -12,10 +12,10 @@ export const monthly = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const MONTH_SECONDS = 2592000; // 30 days
-    const cd = cooldownRepo.checkCooldown(userId, 'monthly');
+    const cd = await cooldownRepo.checkCooldown(userId, 'monthly');
 
     if (cd.onCooldown) {
       return ctx.reply(
@@ -25,7 +25,7 @@ export const monthly = {
       );
     }
 
-    const isPremium = userRepo.isPremium(userId);
+    const isPremium = await userRepo.isPremium(userId);
 
     // Rewards
     let coins = 0;
@@ -33,9 +33,9 @@ export const monthly = {
 
     if (isPremium) {
       coins = 800000;
-      inventoryRepo.addItem(userId, 'banknote', 5);
-      inventoryRepo.addItem(userId, 'lifesaver', 3);
-      inventoryRepo.addItem(userId, 'pepecoin', 1);
+      await inventoryRepo.addItem(userId, 'banknote', 5);
+      await inventoryRepo.addItem(userId, 'lifesaver', 3);
+      await inventoryRepo.addItem(userId, 'pepecoin', 1);
       itemsGiven = [
         '5x 📜 <b>Bank Note</b>',
         '3x 🛟 <b>Life Saver</b>',
@@ -43,9 +43,9 @@ export const monthly = {
       ];
     } else {
       coins = 350000;
-      inventoryRepo.addItem(userId, 'banknote', 3);
-      inventoryRepo.addItem(userId, 'lifesaver', 2);
-      inventoryRepo.addItem(userId, 'adventureticket', 1);
+      await inventoryRepo.addItem(userId, 'banknote', 3);
+      await inventoryRepo.addItem(userId, 'lifesaver', 2);
+      await inventoryRepo.addItem(userId, 'adventureticket', 1);
       itemsGiven = [
         '3x 📜 <b>Bank Note</b>',
         '2x 🛟 <b>Life Saver</b>',
@@ -53,9 +53,14 @@ export const monthly = {
       ];
     }
 
-    userRepo.updateWallet(userId, coins);
-    cooldownRepo.setCooldown(userId, 'monthly', MONTH_SECONDS);
-    const xpResult = addXp(userId, isPremium ? 500 : 250);
+    await userRepo.updateCoins(userId, {
+      walletDelta: coins,
+      sourceCommand: '/monthly',
+      details: `Monthly Milestone Vault (${isPremium ? 'VIP Vault' : 'Standard'})`
+    });
+
+    await cooldownRepo.setCooldown(userId, 'monthly', MONTH_SECONDS);
+    const xpResult = await addXp(userId, isPremium ? 500 : 250);
 
     const banner = isPremium
       ? '👑 <b>PREMIUM MONTHLY VAULT UNLOCKED!</b> 👑'

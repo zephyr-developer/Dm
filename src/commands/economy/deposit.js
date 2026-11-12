@@ -9,7 +9,7 @@ export const deposit = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.split(/\s+/).slice(1);
     const input = args[0]?.toLowerCase();
@@ -48,7 +48,7 @@ export const deposit = {
       return ctx.reply('❌ Cannot deposit 0 coins.');
     }
 
-    const result = userRepo.deposit(userId, depositAmount);
+    const result = await userRepo.deposit(userId, depositAmount);
     if (!result.success) {
       return ctx.reply(`❌ Deposit failed: ${result.reason}`);
     }

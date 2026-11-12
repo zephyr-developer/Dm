@@ -6,7 +6,7 @@ import { formatCoins } from '../../utils/formatters.js';
 
 const ITEMS_PER_PAGE = 4;
 
-function buildShopPage(userId, page = 1) {
+async function buildShopPage(userId, page = 1) {
   const buyable = getBuyableItems();
   const totalPages = Math.ceil(buyable.length / ITEMS_PER_PAGE) || 1;
   const currentPage = Math.max(1, Math.min(totalPages, page));
@@ -14,19 +14,19 @@ function buildShopPage(userId, page = 1) {
   const startIdx = (currentPage - 1) * ITEMS_PER_PAGE;
   const pageItems = buyable.slice(startIdx, startIdx + ITEMS_PER_PAGE);
 
-  const user = userRepo.getUser(userId);
-  const walletCoins = user ? user.wallet : 0;
+  const user = await userRepo.getUser(userId);
+  const walletCoins = user ? Number(user.wallet || 0) : 0;
 
   let text = `🛍️ <b>TeleMemer Black Market & Equipment Shop</b>\n` +
     `👛 <b>Your Wallet:</b> ${formatCoins(walletCoins)} | 📄 <b>Page ${currentPage} / ${totalPages}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  pageItems.forEach(item => {
-    const userQuantity = inventoryRepo.getItem(userId, item.id);
+  for (const item of pageItems) {
+    const userQuantity = await inventoryRepo.getItem(userId, item.id);
     text += `${item.emoji} <b>${item.name}</b> (<code>${item.id}</code>)\n` +
       `• <b>Price:</b> ${formatCoins(item.buyPrice)} | Owned: <b>${userQuantity}</b>\n` +
       `• <i>${item.description}</i>\n\n`;
-  });
+  }
 
   text += `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
     `👉 <i>To buy in bulk, run:</i> <code>/buy &lt;item&gt; [amount]</code>`;
@@ -61,9 +61,9 @@ export const shop = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const { text, keyboard } = buildShopPage(userId, 1);
+    const { text, keyboard } = await buildShopPage(userId, 1);
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -80,7 +80,7 @@ export const shop = {
     // Handle Page Flip
     if (action === 'page') {
       const page = Number(parts[2]);
-      const { text, keyboard } = buildShopPage(targetUserId, page);
+      const { text, keyboard } = await buildShopPage(targetUserId, page);
 
       try {
         await ctx.editMessageText(text, {
@@ -104,8 +104,8 @@ export const shop = {
         return ctx.answerCallbackQuery({ text: 'Item not available for purchase.', show_alert: true });
       }
 
-      const user = userRepo.getUser(targetUserId);
-      if (!user || user.wallet < item.buyPrice) {
+      const user = await userRepo.getUser(targetUserId);
+      if (!user || Number(user.wallet || 0) < item.buyPrice) {
         return ctx.answerCallbackQuery({
           text: `❌ Insufficient funds! You need ${formatCoins(item.buyPrice)}.`,
           show_alert: true
@@ -113,11 +113,15 @@ export const shop = {
       }
 
       // Deduct wallet and add item
-      userRepo.updateWallet(targetUserId, -item.buyPrice);
-      inventoryRepo.addItem(targetUserId, item.id, 1);
+      await userRepo.updateCoins(targetUserId, {
+        walletDelta: -item.buyPrice,
+        sourceCommand: '/shop buy',
+        details: `Quick-bought 1x ${item.name} (${item.emoji})`
+      });
+      await inventoryRepo.addItem(targetUserId, item.id, 1);
 
       // Re-render shop page
-      const { text, keyboard } = buildShopPage(targetUserId, page);
+      const { text, keyboard } = await buildShopPage(targetUserId, page);
       await ctx.editMessageText(text, {
         parse_mode: 'HTML',
         reply_markup: keyboard

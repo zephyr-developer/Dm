@@ -12,10 +12,10 @@ export const weekly = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const WEEK_SECONDS = 604800; // 7 days
-    const cd = cooldownRepo.checkCooldown(userId, 'weekly');
+    const cd = await cooldownRepo.checkCooldown(userId, 'weekly');
 
     if (cd.onCooldown) {
       return ctx.reply(
@@ -25,7 +25,7 @@ export const weekly = {
       );
     }
 
-    const isPremium = userRepo.isPremium(userId);
+    const isPremium = await userRepo.isPremium(userId);
 
     // Rewards
     let coins = 0;
@@ -33,9 +33,9 @@ export const weekly = {
 
     if (isPremium) {
       coins = 175000;
-      inventoryRepo.addItem(userId, 'banknote', 3);
-      inventoryRepo.addItem(userId, 'lifesaver', 1);
-      inventoryRepo.addItem(userId, 'coinbomb', 1);
+      await inventoryRepo.addItem(userId, 'banknote', 3);
+      await inventoryRepo.addItem(userId, 'lifesaver', 1);
+      await inventoryRepo.addItem(userId, 'coinbomb', 1);
       itemsGiven = [
         '3x 📜 <b>Bank Note</b>',
         '1x 🛟 <b>Life Saver</b>',
@@ -43,17 +43,22 @@ export const weekly = {
       ];
     } else {
       coins = 75000;
-      inventoryRepo.addItem(userId, 'banknote', 1);
-      inventoryRepo.addItem(userId, 'horseshoe', 1);
+      await inventoryRepo.addItem(userId, 'banknote', 1);
+      await inventoryRepo.addItem(userId, 'horseshoe', 1);
       itemsGiven = [
         '1x 📜 <b>Bank Note</b>',
         '1x 🧲 <b>Lucky Horseshoe</b>'
       ];
     }
 
-    userRepo.updateWallet(userId, coins);
-    cooldownRepo.setCooldown(userId, 'weekly', WEEK_SECONDS);
-    const xpResult = addXp(userId, isPremium ? 200 : 100);
+    await userRepo.updateCoins(userId, {
+      walletDelta: coins,
+      sourceCommand: '/weekly',
+      details: `Weekly Care Package (${isPremium ? 'VIP Airdrop' : 'Standard'})`
+    });
+
+    await cooldownRepo.setCooldown(userId, 'weekly', WEEK_SECONDS);
+    const xpResult = await addXp(userId, isPremium ? 200 : 100);
 
     const banner = isPremium
       ? '💎 <b>PREMIUM WEEKLY AIRDROP!</b> 💎'

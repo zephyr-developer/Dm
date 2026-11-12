@@ -6,18 +6,18 @@ import { getXpProgress } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, formatTime, progressBar, sanitizeHtml } from '../../utils/formatters.js';
 
-function buildProfileCard(targetUserId) {
-  const user = userRepo.getUser(targetUserId);
+async function buildProfileCard(targetUserId) {
+  const user = await userRepo.getUser(targetUserId);
   if (!user) return { text: 'User profile not found.', keyboard: null };
 
   const xpProg = getXpProgress(user);
   const xpBar = progressBar(xpProg.current, xpProg.max, 8);
   const currentJob = getJob(user.job_id);
-  const activeBuffs = inventoryRepo.getActiveBuffs(targetUserId);
-  const luckBreakdown = getLuckBreakdown(targetUserId);
+  const activeBuffs = await inventoryRepo.getActiveBuffs(targetUserId);
+  const luckBreakdown = await getLuckBreakdown(targetUserId);
 
-  const isPrem = userRepo.isPremium(targetUserId);
-  const premRemaining = userRepo.getPremiumRemaining(targetUserId);
+  const isPrem = await userRepo.isPremium(targetUserId);
+  const premRemaining = await userRepo.getPremiumRemaining(targetUserId);
 
   let premiumBadge = '';
   if (isPrem) {
@@ -78,9 +78,9 @@ export const profile = {
       targetFirstName = replied.first_name;
     }
 
-    userRepo.getOrInitUser(targetUserId, targetUsername, targetFirstName);
+    await userRepo.getOrInitUser(targetUserId, targetUsername, targetFirstName);
 
-    const { text, keyboard } = buildProfileCard(targetUserId);
+    const { text, keyboard } = await buildProfileCard(targetUserId);
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -95,13 +95,13 @@ export const profile = {
     const targetUserId = Number(parts[2]);
 
     if (action === 'toggle_passive') {
-      const user = userRepo.getUser(targetUserId);
+      const user = await userRepo.getUser(targetUserId);
       if (!user) return ctx.answerCallbackQuery({ text: 'User not found.' });
 
       const newMode = user.passive_mode === 1 ? 0 : 1;
-      userRepo.setPassiveMode(targetUserId, newMode);
+      await userRepo.setPassiveMode(targetUserId, newMode);
 
-      const { text, keyboard } = buildProfileCard(targetUserId);
+      const { text, keyboard } = await buildProfileCard(targetUserId);
       await ctx.editMessageText(text, {
         parse_mode: 'HTML',
         reply_markup: keyboard
@@ -115,7 +115,7 @@ export const profile = {
     }
 
     if (action === 'refresh') {
-      const { text, keyboard } = buildProfileCard(targetUserId);
+      const { text, keyboard } = await buildProfileCard(targetUserId);
       try {
         await ctx.editMessageText(text, {
           parse_mode: 'HTML',

@@ -20,7 +20,7 @@ export const work = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.trim().split(/\s+/).slice(1);
     const subCommand = args[0]?.toLowerCase();
@@ -32,7 +32,8 @@ export const work = {
 
       for (const j of allJobs) {
         const isCurrent = user.job_id === j.id;
-        const qualified = user.work_shifts >= j.requiredShifts;
+        const shifts = Number(user.work_shifts || 0);
+        const qualified = shifts >= j.requiredShifts;
         const status = isCurrent ? ' (🟢 YOUR CURRENT JOB)' : qualified ? ' (✅ Qualified)' : ` (🔒 Requires ${j.requiredShifts} shifts)`;
 
         listMsg += `${j.emoji} <b>${j.name}</b>${status}\n` +
@@ -60,14 +61,15 @@ export const work = {
         return ctx.reply(`💼 You are already employed as a <b>${job.name}</b>!`, { parse_mode: 'HTML' });
       }
 
-      if (user.work_shifts < job.requiredShifts) {
+      const shifts = Number(user.work_shifts || 0);
+      if (shifts < job.requiredShifts) {
         return ctx.reply(
-          `🚫 <b>Application Rejected:</b> You have completed <b>${user.work_shifts}</b> shifts, but <b>${job.name}</b> requires at least <b>${job.requiredShifts}</b> shifts of experience.`,
+          `🚫 <b>Application Rejected:</b> You have completed <b>${shifts}</b> shifts, but <b>${job.name}</b> requires at least <b>${job.requiredShifts}</b> shifts of experience.`,
           { parse_mode: 'HTML' }
         );
       }
 
-      userRepo.setJob(userId, job.id);
+      await userRepo.setJob(userId, job.id);
       return ctx.reply(
         `🎉 <b>Congratulations!</b> You were hired as a ${job.emoji} <b>${job.name}</b>!\n` +
         `Your new salary is <b>${formatCoins(job.salary)}</b> per shift.\n` +
@@ -86,9 +88,9 @@ export const work = {
     }
 
     // Check cooldown for working (45 minutes = 2700s base, 22.5 minutes for Premium)
-    const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, 'work');
+    const { onCooldown, remainingSeconds } = await cooldownRepo.checkCooldown(userId, 'work');
     if (onCooldown) {
-      const isPrem = userRepo.isPremium(userId);
+      const isPrem = await userRepo.isPremium(userId);
       let waitMsg = `⏳ <b>Your shift ended recently!</b> You can work again in <b>${formatTime(remainingSeconds)}</b>.`;
       if (!isPrem) {
         waitMsg += `\n💎 <i>Tip: Premium users only wait 22m 30s!</i>`;
@@ -98,7 +100,7 @@ export const work = {
 
     const currentJob = getJob(user.job_id);
     if (!currentJob) {
-      userRepo.setJob(userId, null);
+      await userRepo.setJob(userId, null);
       return ctx.reply('❌ Your previous job is no longer available. Please choose a new one with <code>/work list</code>.', { parse_mode: 'HTML' });
     }
 
@@ -172,7 +174,7 @@ export const work = {
       activeWorkSessions.delete(targetUserId);
 
       // Set 45-minute base cooldown (halved to 22.5 mins if Premium)
-      cooldownRepo.applyEffectiveCooldown(targetUserId, 'work', 2700);
+      await cooldownRepo.applyEffectiveCooldown(targetUserId, 'work', 2700);
 
       const isCorrect = guess === session.correctEmoji;
       let payout = 0;
@@ -180,23 +182,31 @@ export const work = {
 
       if (isCorrect) {
         payout = job.salary;
-        userRepo.updateWallet(targetUserId, payout);
-        userRepo.incrementWorkShifts(targetUserId);
+        await userRepo.updateCoins(targetUserId, {
+          walletDelta: payout,
+          sourceCommand: '/work',
+          details: `Shift at ${job.name} (Full Salary)`
+        });
+        await userRepo.incrementWorkShifts(targetUserId);
 
         // 5% chance of item drop
         if (Math.random() < 0.05 && job.workDrop?.length > 0) {
           const droppedId = pickRandom(job.workDrop);
-          inventoryRepo.addItem(targetUserId, droppedId, 1);
+          await inventoryRepo.addItem(targetUserId, droppedId, 1);
           const droppedItem = items[droppedId];
           dropText = `\n🎁 <b>Special Bonus Drop:</b> Found 1x ${droppedItem?.emoji || '📦'} <b>${droppedItem?.name || droppedId}</b> during your shift!`;
         }
       } else {
         // Partial pay for trying
         payout = Math.floor(job.salary * 0.25);
-        userRepo.updateWallet(targetUserId, payout);
+        await userRepo.updateCoins(targetUserId, {
+          walletDelta: payout,
+          sourceCommand: '/work',
+          details: `Shift at ${job.name} (Partial Effort)`
+        });
       }
 
-      const xpResult = addXp(targetUserId, isCorrect ? 40 : 15);
+      const xpResult = await addXp(targetUserId, isCorrect ? 40 : 15);
 
       let resultText = '';
       if (isCorrect) {

@@ -15,7 +15,7 @@ export const use = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.trim().split(/\s+/).slice(1);
     const itemQuery = args.join(' ');
@@ -40,7 +40,7 @@ export const use = {
       return ctx.reply(`❌ Could not find an item called "<b>${itemQuery}</b>".`, { parse_mode: 'HTML' });
     }
 
-    if (!inventoryRepo.hasItem(userId, item.id, 1)) {
+    if (!(await inventoryRepo.hasItem(userId, item.id, 1))) {
       return ctx.reply(`🎒 You do not have any ${item.emoji} <b>${item.name}</b> in your inventory!`, { parse_mode: 'HTML' });
     }
 
@@ -48,10 +48,9 @@ export const use = {
     // 1. BANK NOTE
     // ==========================================
     if (item.id === 'banknote') {
-      inventoryRepo.removeItem(userId, 'banknote', 1);
+      await inventoryRepo.removeItem(userId, 'banknote', 1);
       const bonusSpace = randomBetween(15000, 30000);
-      userRepo.increaseBankMax(userId, bonusSpace);
-      const updatedUser = userRepo.getUser(userId);
+      const updatedUser = await userRepo.increaseBankMax(userId, bonusSpace);
 
       return ctx.reply(
         `📜 <b>Bank Vault Expanded!</b>\n` +
@@ -66,8 +65,8 @@ export const use = {
     // 2. PADLOCK
     // ==========================================
     if (item.id === 'padlock') {
-      inventoryRepo.removeItem(userId, 'padlock', 1);
-      inventoryRepo.setBuff(userId, 'padlock', 86400); // 24h
+      await inventoryRepo.removeItem(userId, 'padlock', 1);
+      await inventoryRepo.setBuff(userId, 'padlock', 86400); // 24h
 
       return ctx.reply(
         `🔒 <b>Padlock Armed!</b>\n` +
@@ -81,8 +80,8 @@ export const use = {
     // 3. LANDMINE
     // ==========================================
     if (item.id === 'landmine') {
-      inventoryRepo.removeItem(userId, 'landmine', 1);
-      inventoryRepo.setBuff(userId, 'landmine', 86400); // 24h
+      await inventoryRepo.removeItem(userId, 'landmine', 1);
+      await inventoryRepo.setBuff(userId, 'landmine', 86400); // 24h
 
       return ctx.reply(
         `💣 <b>Landmine Primed!</b>\n` +
@@ -96,8 +95,8 @@ export const use = {
     // 4. LUCKY HORSESHOE
     // ==========================================
     if (item.id === 'horseshoe') {
-      inventoryRepo.removeItem(userId, 'horseshoe', 1);
-      inventoryRepo.setBuff(userId, 'horseshoe', 1800); // 30 mins
+      await inventoryRepo.removeItem(userId, 'horseshoe', 1);
+      await inventoryRepo.setBuff(userId, 'horseshoe', 1800); // 30 mins
 
       return ctx.reply(
         `🧲 <b>Lucky Horseshoe Activated!</b>\n` +
@@ -111,8 +110,8 @@ export const use = {
     // 5. APPLE
     // ==========================================
     if (item.id === 'apple') {
-      inventoryRepo.removeItem(userId, 'apple', 1);
-      inventoryRepo.setBuff(userId, 'apple', 86400); // 24h
+      await inventoryRepo.removeItem(userId, 'apple', 1);
+      await inventoryRepo.setBuff(userId, 'apple', 86400); // 24h
 
       return ctx.reply(
         `🍎 <b>Crisp Apple Consumed!</b>\n` +
@@ -130,7 +129,7 @@ export const use = {
         return ctx.reply('💣 Coin Bombs can only be detonated inside a group chat for players to race for!');
       }
 
-      inventoryRepo.removeItem(userId, 'coinbomb', 1);
+      await inventoryRepo.removeItem(userId, 'coinbomb', 1);
       const bombId = `bomb_${Date.now()}_${userId}`;
       const totalCoins = randomBetween(15000, 45000);
 
@@ -181,8 +180,12 @@ export const use = {
 
       // Claim slice (divided among 3)
       const claimAmount = Math.floor(bomb.totalCoins / 3);
-      userRepo.getOrInitUser(clickerId, ctx.from.username, clickerName);
-      userRepo.updateWallet(clickerId, claimAmount);
+      await userRepo.getOrInitUser(clickerId, ctx.from.username, clickerName);
+      await userRepo.updateCoins(clickerId, {
+        walletDelta: claimAmount,
+        sourceCommand: '/use coinbomb',
+        details: `Snatched slice of Coin Bomb dropped by ${bomb.creatorName}`
+      });
 
       bomb.claimed.push({
         userId: clickerId,

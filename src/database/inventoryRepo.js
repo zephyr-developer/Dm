@@ -1,123 +1,132 @@
-import db from './db.js';
-
-const stmtGetItem = db.prepare(`
-  SELECT item_id, quantity FROM inventories WHERE user_id = ? AND item_id = ?
-`);
-
-const stmtGetUserInventory = db.prepare(`
-  SELECT item_id, quantity FROM inventories WHERE user_id = ? AND quantity > 0 ORDER BY quantity DESC
-`);
-
-const stmtUpsertItem = db.prepare(`
-  INSERT INTO inventories (user_id, item_id, quantity)
-  VALUES (?, ?, ?)
-  ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = quantity + excluded.quantity
-`);
-
-const stmtSetBuff = db.prepare(`
-  INSERT INTO active_buffs (user_id, buff_type, expires_at)
-  VALUES (?, ?, ?)
-  ON CONFLICT(user_id, buff_type) DO UPDATE SET expires_at = excluded.expires_at
-`);
-
-const stmtGetBuff = db.prepare(`
-  SELECT buff_type, expires_at FROM active_buffs WHERE user_id = ? AND buff_type = ?
-`);
-
-const stmtRemoveBuff = db.prepare(`
-  DELETE FROM active_buffs WHERE user_id = ? AND buff_type = ?
-`);
-
-const stmtCleanExpiredBuffs = db.prepare(`
-  DELETE FROM active_buffs WHERE expires_at <= ?
-`);
+import { query } from './db.js';
 
 export const inventoryRepo = {
-  getItem(userId, itemId) {
-    const row = stmtGetItem.get(userId, itemId);
-    return row ? row.quantity : 0;
+  async getItem(userId, itemId) {
+    const res = await query(
+      'SELECT quantity FROM inventories WHERE user_id = $1 AND item_id = $2;',
+      [userId, itemId]
+    );
+    return res.rows[0] ? Number(res.rows[0].quantity) : 0;
   },
 
-  hasItem(userId, itemId, requiredQuantity = 1) {
-    return this.getItem(userId, itemId) >= requiredQuantity;
+  async hasItem(userId, itemId, requiredQuantity = 1) {
+    const qty = await this.getItem(userId, itemId);
+    return qty >= requiredQuantity;
   },
 
-  getUserInventory(userId) {
-    return stmtGetUserInventory.all(userId);
+  async getUserInventory(userId) {
+    const res = await query(
+      'SELECT item_id, quantity FROM inventories WHERE user_id = $1 AND quantity > 0 ORDER BY quantity DESC;',
+      [userId]
+    );
+    return res.rows.map(r => ({ ...r, quantity: Number(r.quantity) }));
   },
 
-  addItem(userId, itemId, quantity = 1) {
-    if (quantity <= 0) return false;
-    stmtUpsertItem.run(userId, itemId, quantity);
+  async addItem(userId, itemId, quantity = 1) {
+    const qty = Number(quantity);
+    if (qty <= 0) return false;
+
+    const sql = `
+      INSERT INTO inventories (user_id, item_id, quantity)
+      VALUES ($1, $2, $3)
+      ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = inventories.quantity + $3;
+    `;
+    await query(sql, [userId, itemId, qty]);
     return true;
   },
 
-  removeItem(userId, itemId, quantity = 1) {
-    if (quantity <= 0) return false;
-    const current = this.getItem(userId, itemId);
-    if (current < quantity) return false;
+  async removeItem(userId, itemId, quantity = 1) {
+    const qty = Number(quantity);
+    if (qty <= 0) return false;
 
-    if (current === quantity) {
-      db.prepare(`DELETE FROM inventories WHERE user_id = ? AND item_id = ?`).run(userId, itemId);
+    const current = await this.getItem(userId, itemId);
+    if (current < qty) return false;
+
+    if (current === qty) {
+      await query('DELETE FROM inventories WHERE user_id = $1 AND item_id = $2;', [userId, itemId]);
     } else {
-      db.prepare(`UPDATE inventories SET quantity = quantity - ? WHERE user_id = ? AND item_id = ?`)
-        .run(quantity, userId, itemId);
+      await query(
+        'UPDATE inventories SET quantity = quantity - $1 WHERE user_id = $2 AND item_id = $3;',
+        [qty, userId, itemId]
+      );
     }
     return true;
   },
 
-  wipeNonCollectibleInventory(userId, collectibleItemIds = []) {
+  async wipeNonCollectibleInventory(userId, collectibleItemIds = []) {
     if (collectibleItemIds.length === 0) {
-      db.prepare(`DELETE FROM inventories WHERE user_id = ?`).run(userId);
+      await query('DELETE FROM inventories WHERE user_id = $1;', [userId]);
     } else {
-      const placeholders = collectibleItemIds.map(() => '?').join(',');
-      db.prepare(`
-        DELETE FROM inventories
-        WHERE user_id = ? AND item_id NOT IN (${placeholders})
-      `).run(userId, ...collectibleItemIds);
+      const placeholders = collectibleItemIds.map((_, i) => `$${i + 2}`).join(',');
+      await query(
+        `DELETE FROM inventories WHERE user_id = $1 AND item_id NOT IN (${placeholders});`,
+        [userId, ...collectibleItemIds]
+      );
     }
   },
 
   // Active Buffs
-  setBuff(userId, buffType, durationSeconds) {
+  async setBuff(userId, buffType, durationSeconds) {
     const expiresAt = Math.floor(Date.now() / 1000) + durationSeconds;
-    stmtSetBuff.run(userId, buffType, expiresAt);
+    const sql = `
+      INSERT INTO active_buffs (user_id, buff_type, expires_at)
+      VALUES ($1, $2, $3)
+      ON CONFLICT(user_id, buff_type) DO UPDATE SET expires_at = $3;
+    `;
+    await query(sql, [userId, buffType, expiresAt]);
     return expiresAt;
   },
 
-  hasBuff(userId, buffType) {
+  async hasBuff(userId, buffType) {
     const now = Math.floor(Date.now() / 1000);
-    const buff = stmtGetBuff.get(userId, buffType);
+    const res = await query(
+      'SELECT expires_at FROM active_buffs WHERE user_id = $1 AND buff_type = $2;',
+      [userId, buffType]
+    );
+    const buff = res.rows[0];
     if (!buff) return false;
-    if (buff.expires_at <= now) {
-      stmtRemoveBuff.run(userId, buffType);
+
+    if (Number(buff.expires_at) <= now) {
+      await this.removeBuff(userId, buffType);
       return false;
     }
     return true;
   },
 
-  getBuffRemaining(userId, buffType) {
+  async getBuffRemaining(userId, buffType) {
     const now = Math.floor(Date.now() / 1000);
-    const buff = stmtGetBuff.get(userId, buffType);
-    if (!buff || buff.expires_at <= now) {
-      if (buff) stmtRemoveBuff.run(userId, buffType);
+    const res = await query(
+      'SELECT expires_at FROM active_buffs WHERE user_id = $1 AND buff_type = $2;',
+      [userId, buffType]
+    );
+    const buff = res.rows[0];
+    if (!buff || Number(buff.expires_at) <= now) {
+      if (buff) await this.removeBuff(userId, buffType);
       return 0;
     }
-    return buff.expires_at - now;
+    return Number(buff.expires_at) - now;
   },
 
-  removeBuff(userId, buffType) {
-    stmtRemoveBuff.run(userId, buffType);
+  async removeBuff(userId, buffType) {
+    await query('DELETE FROM active_buffs WHERE user_id = $1 AND buff_type = $2;', [userId, buffType]);
   },
 
-  getActiveBuffs(userId) {
+  async getActiveBuffs(userId) {
     const now = Math.floor(Date.now() / 1000);
-    stmtCleanExpiredBuffs.run(now);
-    return db.prepare(`
-      SELECT buff_type, expires_at, (expires_at - ?) AS remaining_seconds
-      FROM active_buffs
-      WHERE user_id = ? AND expires_at > ?
-    `).all(now, userId, now);
+    // Prune expired
+    await query('DELETE FROM active_buffs WHERE expires_at <= $1;', [now]);
+
+    const res = await query(
+      `SELECT buff_type, expires_at, (expires_at - $1) AS remaining_seconds
+       FROM active_buffs
+       WHERE user_id = $2 AND expires_at > $1;`,
+      [now, userId]
+    );
+    return res.rows.map(r => ({
+      ...r,
+      expires_at: Number(r.expires_at),
+      remaining_seconds: Number(r.remaining_seconds)
+    }));
   }
 };
 

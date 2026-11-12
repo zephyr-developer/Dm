@@ -17,22 +17,22 @@ export const incluck = {
     // Case 1: Reply to a user with /incluck <percentage>
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      target = userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
       percentage = parseInt(rawArgs[0] || '0', 10);
     } 
     // Case 2: /incluck <percentage> @username
     else if (rawArgs[1]?.startsWith('@')) {
-      target = userRepo.getUserByUsername(rawArgs[1]);
+      target = await userRepo.getUserByUsername(rawArgs[1]);
       percentage = parseInt(rawArgs[0] || '0', 10);
     } 
     // Case 3: /incluck @username <percentage>
     else if (rawArgs[0]?.startsWith('@')) {
-      target = userRepo.getUserByUsername(rawArgs[0]);
+      target = await userRepo.getUserByUsername(rawArgs[0]);
       percentage = parseInt(rawArgs[1] || '0', 10);
     } 
     // Case 4: /incluck <percentage> (applies to owner themselves)
     else {
-      target = userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
+      target = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
       percentage = parseInt(rawArgs[0] || '0', 10);
     }
 
@@ -45,7 +45,7 @@ export const incluck = {
     }
 
     // Set custom luck in database
-    userRepo.setCustomLuck(target.user_id, percentage);
+    await userRepo.setCustomLuck(target.user_id, percentage);
 
     return ctx.reply(
       `🧲 <b>Luck Injected Successfully!</b>\n\n` +

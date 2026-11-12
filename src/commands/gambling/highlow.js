@@ -15,7 +15,7 @@ export const highlow = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const hint = randomBetween(1, 100);
     const secret = randomBetween(1, 100);
@@ -50,7 +50,7 @@ export const highlow = {
 
     activeHLSessions.delete(targetUserId);
     let { hint, secret } = session;
-    const luckInfo = getLuckBreakdown(targetUserId);
+    const luckInfo = await getLuckBreakdown(targetUserId);
 
     // LuckEngine: Tilt mystery number if player has active luck
     if (luckInfo.totalBonus > 0) {
@@ -86,8 +86,12 @@ export const highlow = {
         winTitle = '🎉 <b>CORRECT GUESS!</b>';
       }
 
-      userRepo.updateWallet(targetUserId, reward);
-      const xpRes = addXp(targetUserId, isJackpot ? 100 : 25);
+      await userRepo.updateCoins(targetUserId, {
+        walletDelta: reward,
+        sourceCommand: '/highlow',
+        details: isJackpot ? 'High-Low Exact Jackpot (25k)' : `High-Low Win (${choice})`
+      });
+      const xpRes = await addXp(targetUserId, isJackpot ? 100 : 25);
 
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
@@ -102,7 +106,7 @@ export const highlow = {
       await ctx.editMessageText(msg, { parse_mode: 'HTML' });
       await ctx.answerCallbackQuery({ text: 'You won!' });
     } else {
-      const xpRes = addXp(targetUserId, 10);
+      const xpRes = await addXp(targetUserId, 10);
       const msg = `💀 <b>WRONG GUESS!</b>\n\n` +
         `• Hint Number: <b>${hint}</b>\n` +
         `• Secret Number was: <b>${secret}</b>\n` +

@@ -6,9 +6,9 @@ import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
 
 const ITEMS_PER_PAGE = 6;
 
-function buildInventoryCard(targetUserId, page = 1) {
-  const user = userRepo.getUser(targetUserId);
-  const rawInventory = inventoryRepo.getUserInventory(targetUserId);
+async function buildInventoryCard(targetUserId, page = 1) {
+  const user = await userRepo.getUser(targetUserId);
+  const rawInventory = await inventoryRepo.getUserInventory(targetUserId);
 
   if (!rawInventory || rawInventory.length === 0) {
     const emptyText = `🎒 <b>Backpack for ${sanitizeHtml(user?.first_name || 'Player')}</b>\n\n` +
@@ -76,9 +76,9 @@ export const inventory = {
       targetFirstName = replied.first_name;
     }
 
-    userRepo.getOrInitUser(targetUserId, targetUsername, targetFirstName);
+    await userRepo.getOrInitUser(targetUserId, targetUsername, targetFirstName);
 
-    const { text, keyboard } = buildInventoryCard(targetUserId, 1);
+    const { text, keyboard } = await buildInventoryCard(targetUserId, 1);
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -92,7 +92,7 @@ export const inventory = {
     const page = Number(parts[2]);
     const targetUserId = Number(parts[3]);
 
-    const { text, keyboard } = buildInventoryCard(targetUserId, page);
+    const { text, keyboard } = await buildInventoryCard(targetUserId, page);
 
     try {
       await ctx.editMessageText(text, {

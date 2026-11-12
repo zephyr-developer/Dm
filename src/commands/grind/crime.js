@@ -72,7 +72,7 @@ export const crime = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const keys = Object.keys(CRIMES);
     const shuffled = keys.sort(() => 0.5 - Math.random());
@@ -104,7 +104,7 @@ export const crime = {
       return ctx.answerCallbackQuery({ text: 'Crime not found!' });
     }
 
-    const luckInfo = getLuckBreakdown(targetUserId);
+    const luckInfo = await getLuckBreakdown(targetUserId);
     const failReduction = luckInfo.totalBonus / 350;
     const effectiveFailChance = Math.max(0.02, targetCrime.failChance - failReduction);
 
@@ -118,18 +118,22 @@ export const crime = {
     // Success!
     const baseCoins = randomBetween(targetCrime.coinRange[0], targetCrime.coinRange[1]);
     const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 120)));
-    userRepo.updateWallet(targetUserId, earnedCoins);
+    await userRepo.updateCoins(targetUserId, {
+      walletDelta: earnedCoins,
+      sourceCommand: '/crime',
+      details: `Committed ${targetCrime.name} (${targetCrime.emoji})`
+    });
 
     let dropMsg = '';
     // 30% base chance for crime item, boosted by luck
-    if (targetCrime.itemPool.length > 0 && checkDropChance(targetUserId, 0.30)) {
+    if (targetCrime.itemPool.length > 0 && (await checkDropChance(targetUserId, 0.30))) {
       const itmId = pickRandom(targetCrime.itemPool);
-      inventoryRepo.addItem(targetUserId, itmId, 1);
+      await inventoryRepo.addItem(targetUserId, itmId, 1);
       const itm = items[itmId] || { emoji: '📦', name: itmId };
       dropMsg = `\n🎁 You also stashed away 1x ${itm.emoji} <b>${itm.name}</b>!`;
     }
 
-    const xpRes = addXp(targetUserId, randomBetween(25, 45));
+    const xpRes = await addXp(targetUserId, randomBetween(25, 45));
 
     let luckTag = '';
     if (luckInfo.customLuck > 0) {

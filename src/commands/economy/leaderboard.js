@@ -2,12 +2,12 @@ import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import { formatCoins, formatNumber, sanitizeHtml } from '../../utils/formatters.js';
 
-function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
+async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
   const isGlobal = scope === 'global';
   const isCoins = type === 'coins';
   const targetChatId = isGlobal ? null : chatId;
 
-  const rows = userRepo.getLeaderboard(targetChatId, type, 10);
+  const rows = await userRepo.getLeaderboard(targetChatId, type, 10);
   const title = isCoins ? '🪙 Richest Meme Lords' : '⭐ Top Level Masters';
   const scopeLabel = isGlobal ? '🌍 Global' : '🏠 This Group';
 
@@ -20,11 +20,11 @@ function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
     rows.forEach((row, index) => {
       const medals = ['🥇', '🥈', '🥉'];
       const rankBadge = medals[index] || `<b>#${index + 1}</b>`;
-      const isPrem = (row.premium_until || 0) > Date.now();
+      const isPrem = Number(row.premium_until || 0) > Date.now();
       const premBadge = isPrem ? ' 💎' : '';
       const name = sanitizeHtml(row.first_name || row.username || `Player ${row.user_id}`);
       const valStr = isCoins
-        ? formatCoins(row.total_coins || (row.wallet + row.bank))
+        ? formatCoins(row.total_coins || (Number(row.wallet) + Number(row.bank)))
         : `Lvl ${row.level} (${formatNumber(row.xp)} XP)`;
 
       text += `${rankBadge} <b>${name}</b>${premBadge} — ${valStr}\n`;
@@ -58,7 +58,7 @@ export const leaderboard = {
     const callerId = ctx.from.id;
     const initialScope = ctx.chat.type === 'private' ? 'global' : 'group';
 
-    const { text, keyboard } = buildLeaderboardMessage(chatId, initialScope, 'coins', callerId);
+    const { text, keyboard } = await buildLeaderboardMessage(chatId, initialScope, 'coins', callerId);
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -84,7 +84,7 @@ export const leaderboard = {
       type = parts[3]; // new type
     }
 
-    const { text, keyboard } = buildLeaderboardMessage(chatId, scope, type, callerUserId);
+    const { text, keyboard } = await buildLeaderboardMessage(chatId, scope, type, callerUserId);
 
     try {
       await ctx.editMessageText(text, {

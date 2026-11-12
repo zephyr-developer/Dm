@@ -4,8 +4,8 @@ import inventoryRepo from '../../database/inventoryRepo.js';
 import { getCollectibleItemIds } from '../../config/items.js';
 import { formatCoins } from '../../utils/formatters.js';
 
-function buildPrestigeCard(userId) {
-  const user = userRepo.getUser(userId);
+async function buildPrestigeCard(userId) {
+  const user = await userRepo.getUser(userId);
   if (!user) return { text: 'User account not found.', keyboard: null };
 
   const currentPrestige = user.prestige || 0;
@@ -53,9 +53,9 @@ export const prestige = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const { text, keyboard } = buildPrestigeCard(userId);
+    const { text, keyboard } = await buildPrestigeCard(userId);
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -77,7 +77,7 @@ export const prestige = {
     }
 
     if (action === 'confirm') {
-      const user = userRepo.getUser(targetUserId);
+      const user = await userRepo.getUser(targetUserId);
       if (!user) return ctx.answerCallbackQuery({ text: 'User not found.' });
 
       const targetPrestige = (user.prestige || 0) + 1;
@@ -93,15 +93,15 @@ export const prestige = {
 
       // Execute Prestige Reset
       const newBankMax = (user.bank_max || 5000) + 100000;
-      userRepo.prestigeReset(targetUserId, targetPrestige, newBankMax);
+      await userRepo.prestigeReset(targetUserId, targetPrestige, newBankMax);
 
       // Wipe non-collectibles (Pepe Coin and Pepe Trophy are kept)
       const collectibleIds = getCollectibleItemIds();
-      inventoryRepo.wipeNonCollectibleInventory(targetUserId, collectibleIds);
+      await inventoryRepo.wipeNonCollectibleInventory(targetUserId, collectibleIds);
 
       // Award Care Package
-      inventoryRepo.addItem(targetUserId, 'banknote', 1);
-      inventoryRepo.addItem(targetUserId, 'lifesaver', 1);
+      await inventoryRepo.addItem(targetUserId, 'banknote', 1);
+      await inventoryRepo.addItem(targetUserId, 'lifesaver', 1);
 
       const celebration = `🎉 <b>PRESTIGE ASCENSION COMPLETE!</b> 🎉\n\n` +
         `You have ascended to <b>Prestige Tier ${targetPrestige}</b>!\n\n` +

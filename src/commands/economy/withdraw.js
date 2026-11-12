@@ -9,7 +9,7 @@ export const withdraw = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.split(/\s+/).slice(1);
     const input = args[0]?.toLowerCase();
@@ -43,7 +43,7 @@ export const withdraw = {
       return ctx.reply('❌ Cannot withdraw 0 coins.');
     }
 
-    const result = userRepo.withdraw(userId, withdrawAmount);
+    const result = await userRepo.withdraw(userId, withdrawAmount);
     if (!result.success) {
       return ctx.reply(`❌ Withdrawal failed: ${result.reason}`);
     }

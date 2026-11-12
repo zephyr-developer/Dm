@@ -119,9 +119,9 @@ export async function loadCommands() {
 
           // 2. Cooldown check (Owner @tzhunyuan MUST STILL OBEY COOLDOWNS!)
           if (userId && command.cooldown && command.cooldown > 0) {
-            const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, command.name);
+            const { onCooldown, remainingSeconds } = await cooldownRepo.checkCooldown(userId, command.name);
             if (onCooldown) {
-              const isPrem = userRepo.isPremium(userId);
+              const isPrem = await userRepo.isPremium(userId);
               let cdMsg = `⏳ <b>Slow down!</b> Wait <b>${formatTime(remainingSeconds)}</b> before using <code>/${command.name}</code> again.`;
               if (!isPrem) {
                 const premWait = Math.max(3, Math.floor(command.cooldown * 0.5));
@@ -135,7 +135,7 @@ export async function loadCommands() {
             await command.execute(ctx);
             // Apply effective cooldown (50% reduction for Premium)
             if (userId && command.cooldown && command.cooldown > 0) {
-              cooldownRepo.applyEffectiveCooldown(userId, command.name, command.cooldown);
+              await cooldownRepo.applyEffectiveCooldown(userId, command.name, command.cooldown);
             }
           } catch (execErr) {
             console.error(`[TeleMemer] Error executing /${command.name}:`, execErr.message);

@@ -70,9 +70,12 @@ const CAREERS = [
 const ALL_COMMANDS = [
   { name: 'flow', category: 'grind', cooldown: 'Instant', desc: 'Persistent single-message grinding action bar' },
   { name: 'balance', aliases: 'bal', category: 'economy', cooldown: 'None', desc: 'View wallet, bank progress bar, and total net worth' },
+  { name: 'currencylog', aliases: 'clog, transactions, logs', category: 'economy', cooldown: '10s', desc: 'Interactive financial audit trail with pagination and gain/loss filters' },
   { name: 'deposit', aliases: 'dep', category: 'economy', cooldown: '5s', desc: 'Deposit coins into bank vault (/dep <amt>, max, all)' },
   { name: 'withdraw', aliases: 'with', category: 'economy', cooldown: '5s', desc: 'Withdraw coins from bank vault (/with <amt>, max, all)' },
-  { name: 'daily', aliases: '', category: 'economy', cooldown: '24h', desc: 'Claim daily paycheck with streak bonus and weekly Bank Note' },
+  { name: 'daily', aliases: '', category: 'economy', cooldown: '24h', desc: 'Claim daily paycheck with streak bonus (2x for VIP)' },
+  { name: 'weekly', aliases: '', category: 'economy', cooldown: '7d', desc: 'Weekly supply drop with Bank Note & Life Saver (2x for VIP)' },
+  { name: 'monthly', aliases: '', category: 'economy', cooldown: '30d', desc: 'Monthly milestone payout with Pepe Coin (2x for VIP)' },
   { name: 'work', aliases: '', category: 'economy', cooldown: '45m', desc: 'Career list, applications, and 3-emoji memory shift mini-game' },
   { name: 'leaderboard', aliases: 'lb', category: 'economy', cooldown: '5s', desc: 'Top 10 players with Group/Global and Coins/Level toggles' },
   { name: 'beg', aliases: '', category: 'grind', cooldown: '25s', desc: 'Ask quirky NPCs and billionaires for handouts' },
@@ -119,17 +122,17 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold tracking-tight text-white">TeleMemer</h1>
                 <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                  v1.0.0 • Dank Memer for TG
+                  v2.0.0 • Dank Memer for TG
                 </span>
               </div>
-              <p className="text-xs text-slate-400">Node.js + grammY + SQLite Engine</p>
+              <p className="text-xs text-slate-400">Node.js + grammY + PostgreSQL Engine</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span className="text-slate-300 font-medium">Engine Ready</span>
+              <span className="text-slate-300 font-medium">PostgreSQL Engine Ready</span>
             </div>
           </div>
         </div>
@@ -202,11 +205,11 @@ export default function App() {
                     <span>Database Engine</span>
                     <ShieldCheck className="w-4 h-4 text-emerald-400" />
                   </div>
-                  <div className="text-2xl font-bold text-white">better-sqlite3</div>
-                  <p className="text-xs text-slate-400 mt-1">Zero latency local storage with WAL mode enabled.</p>
+                  <div className="text-2xl font-bold text-white">PostgreSQL (pg.Pool)</div>
+                  <p className="text-xs text-slate-400 mt-1">Persistent cloud storage (Neon/Supabase) with zero data loss policy.</p>
                 </div>
                 <div className="mt-4 pt-3 border-t border-slate-800/80 text-xs text-slate-500 font-mono">
-                  users, inventories, active_buffs, cooldowns
+                  users, currency_logs, inventories, active_buffs, cooldowns
                 </div>
               </div>
 
@@ -490,7 +493,7 @@ export default function App() {
                 <div className="bg-slate-900 p-2.5 rounded font-mono text-xs text-emerald-300 border border-slate-800">
                   BOT_TOKEN="your_token_here"<br />
                   BOT_USERNAME="YourBotName_bot"<br />
-                  DATABASE_PATH="./telememer.sqlite"
+                  DATABASE_URL="postgres://postgres:password@ep-sample.us-east-2.aws.neon.tech/neondb?sslmode=require"
                 </div>
               </div>
 
@@ -502,9 +505,12 @@ export default function App() {
                 <pre className="bg-slate-900 p-3 rounded font-mono text-xs text-slate-300 border border-slate-800 overflow-x-auto max-h-48">
 {`flow - Single-message grinding action bar
 bal - Check wallet, bank & net worth
+currencylog - View automated transaction logs
 dep - Deposit coins into bank
 with - Withdraw coins from bank
 daily - Claim daily coins and streak
+weekly - Claim weekly supply crate
+monthly - Claim monthly milestone payout
 work - Apply for jobs and work shifts
 lb - View richest users in group or globally
 beg - Beg for coins from random NPCs
@@ -546,7 +552,7 @@ prestige - Reset for permanent prestige rank`}
 
       {/* Footer */}
       <footer className="border-t border-slate-800 bg-slate-950 py-4 text-center text-xs text-slate-500">
-        TeleMemer Engine • SQLite WAL mode • 100% complete architecture with zero placeholders
+        TeleMemer Engine • PostgreSQL (pg.Pool) & /currencylog Audit Trail • 100% complete architecture with zero placeholders
       </footer>
     </div>
   );

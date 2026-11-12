@@ -6,16 +6,16 @@ import { formatCoins, randomBetween, pickRandom, sanitizeHtml } from '../../util
 // In-memory active bank heists: heistId -> HeistSession
 const activeHeists = new Map();
 
-function evaluateHeist(ctx, heistId) {
+async function evaluateHeist(ctx, heistId) {
   const heist = activeHeists.get(heistId);
   if (!heist || heist.resolved) return;
   heist.resolved = true;
   activeHeists.delete(heistId);
 
   const { targetUserId, targetName, participants, messageId, chatId } = heist;
-  const targetUser = userRepo.getUser(targetUserId);
+  const targetUser = await userRepo.getUser(targetUserId);
 
-  if (!targetUser || targetUser.bank < 10000) {
+  if (!targetUser || Number(targetUser.bank || 0) < 10000) {
     return ctx.api.editMessageText(
       chatId,
       messageId,
@@ -41,8 +41,12 @@ function evaluateHeist(ctx, heistId) {
   if (isSuccess) {
     // Steal 30%–60% of target's bank
     const stealPercent = randomBetween(30, 60) / 100;
-    const stolenTotal = Math.floor(targetUser.bank * stealPercent);
-    userRepo.updateBank(targetUserId, -stolenTotal);
+    const stolenTotal = Math.floor(Number(targetUser.bank) * stealPercent);
+    await userRepo.updateCoins(targetUserId, {
+      bankDelta: -stolenTotal,
+      sourceCommand: '/bankrob',
+      details: `Vault breached by crew of ${participantCount} robbers`
+    });
 
     // 15% chance 1 participant dies during getaway
     let casualty = null;
@@ -51,13 +55,17 @@ function evaluateHeist(ctx, heistId) {
     if (Math.random() < 0.15) {
       const unluckyIdx = Math.floor(Math.random() * survivors.length);
       casualty = survivors.splice(unluckyIdx, 1)[0];
-      handleDeath(ctx, casualty.userId, 'being shot by bank security snipers on the getaway roof');
+      await handleDeath(ctx, casualty.userId, 'being shot by bank security snipers on the getaway roof');
     }
 
     const share = Math.floor(stolenTotal / Math.max(1, survivors.length));
-    survivors.forEach(p => {
-      userRepo.updateWallet(p.userId, share);
-    });
+    for (const p of survivors) {
+      await userRepo.updateCoins(p.userId, {
+        walletDelta: share,
+        sourceCommand: '/bankrob',
+        details: `Vault heist cut from @${targetName}'s bank`
+      });
+    }
 
     let summary = `🎉 <b>VAULT HEIST SUCCESSFUL!</b> 🏦\n` +
       `The crew breached <b>${sanitizeHtml(targetName)}</b>'s bank vault and escaped with <b>${formatCoins(stolenTotal)}</b> (${Math.round(stealPercent * 100)}% of their vault)!\n\n` +
@@ -71,9 +79,13 @@ function evaluateHeist(ctx, heistId) {
     return ctx.api.editMessageText(chatId, messageId, summary, { parse_mode: 'HTML' }).catch(() => {});
   } else {
     // Heist Failed!
-    participants.forEach(p => {
-      userRepo.updateWallet(p.userId, -2500);
-    });
+    for (const p of participants) {
+      await userRepo.updateCoins(p.userId, {
+        walletDelta: -2500,
+        sourceCommand: '/bankrob',
+        details: `SWAT bail fine from botched bank heist on @${heist.targetName}`
+      });
+    }
 
     const failedMsg = `🚨 <b>HEIST BUSTED BY SWAT!</b> 🚨\n` +
       `The silent alarm was tripped while cutting the titanium vault locks!\n` +
@@ -96,17 +108,17 @@ export const bankrob = {
     }
 
     const callerId = ctx.from.id;
-    const caller = userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
+    const caller = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
     let target = null;
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      target = userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
     } else {
       const args = ctx.message.text.trim().split(/\s+/).slice(1);
       const usernameArg = args[0];
       if (usernameArg) {
-        target = userRepo.getUserByUsername(usernameArg);
+        target = await userRepo.getUserByUsername(usernameArg);
       }
     }
 
@@ -126,7 +138,7 @@ export const bankrob = {
       return ctx.reply(`🛡️ <b>${sanitizeHtml(target.first_name)}</b> has <b>Passive Mode</b> enabled. Their bank is protected by federal immunity!`, { parse_mode: 'HTML' });
     }
 
-    if (target.bank < 10000) {
+    if (Number(target.bank || 0) < 10000) {
       return ctx.reply(`🏦 <b>${sanitizeHtml(target.first_name)}</b> only has ${formatCoins(target.bank)} in their bank. Target must have at least <b>🪙 10,000</b> to justify a heist!`, { parse_mode: 'HTML' });
     }
 
@@ -194,7 +206,7 @@ export const bankrob = {
         return ctx.answerCallbackQuery({ text: 'Crew is full! (Maximum 5 robbers reached)', show_alert: true });
       }
 
-      userRepo.getOrInitUser(joinerId, ctx.from.username, joinerName);
+      await userRepo.getOrInitUser(joinerId, ctx.from.username, joinerName);
       heist.participants.push({ userId: joinerId, name: joinerName });
 
       const currentCount = heist.participants.length;
@@ -217,7 +229,7 @@ export const bankrob = {
 
       // If full (5 members), trigger immediately
       if (currentCount >= 5) {
-        evaluateHeist(ctx, heistId);
+        await evaluateHeist(ctx, heistId);
       }
     }
   }

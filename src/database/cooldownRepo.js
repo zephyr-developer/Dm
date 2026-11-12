@@ -1,79 +1,69 @@
-import db from './db.js';
-
-const stmtGetCooldown = db.prepare(`
-  SELECT expires_at FROM cooldowns WHERE user_id = ? AND command = ?
-`);
-
-const stmtSetCooldown = db.prepare(`
-  INSERT INTO cooldowns (user_id, command, expires_at)
-  VALUES (?, ?, ?)
-  ON CONFLICT(user_id, command) DO UPDATE SET expires_at = excluded.expires_at
-`);
-
-const stmtRemoveCooldown = db.prepare(`
-  DELETE FROM cooldowns WHERE user_id = ? AND command = ?
-`);
-
-const stmtCleanExpired = db.prepare(`
-  DELETE FROM cooldowns WHERE expires_at <= ?
-`);
-
-const stmtGetPremiumUntil = db.prepare(`
-  SELECT premium_until FROM users WHERE user_id = ?
-`);
+import { query } from './db.js';
 
 export const cooldownRepo = {
-  isPremium(userId) {
-    const row = stmtGetPremiumUntil.get(userId);
-    return row ? (row.premium_until || 0) > Date.now() : false;
+  async isPremium(userId) {
+    const res = await query('SELECT premium_until FROM users WHERE user_id = $1;', [userId]);
+    const row = res.rows[0];
+    return row ? Number(row.premium_until || 0) > Date.now() : false;
   },
 
-  getEffectiveCooldown(userId, baseSeconds) {
+  async getEffectiveCooldown(userId, baseSeconds) {
     if (!baseSeconds || baseSeconds <= 0) return 0;
-    if (this.isPremium(userId)) {
+    const isPrem = await this.isPremium(userId);
+    if (isPrem) {
       // 50% reduction for Premium users, minimum 3s
       return Math.max(3, Math.floor(baseSeconds * 0.5));
     }
     return baseSeconds;
   },
 
-  checkCooldown(userId, command) {
+  async checkCooldown(userId, command) {
     const now = Math.floor(Date.now() / 1000);
-    const row = stmtGetCooldown.get(userId, command);
+    const res = await query(
+      'SELECT expires_at FROM cooldowns WHERE user_id = $1 AND command = $2;',
+      [userId, command]
+    );
+    const row = res.rows[0];
 
     if (!row) {
       return { onCooldown: false, remainingSeconds: 0 };
     }
 
-    if (row.expires_at <= now) {
-      stmtRemoveCooldown.run(userId, command);
+    const expiresAt = Number(row.expires_at);
+    if (expiresAt <= now) {
+      await this.resetCooldown(userId, command);
       return { onCooldown: false, remainingSeconds: 0 };
     }
 
     return {
       onCooldown: true,
-      remainingSeconds: row.expires_at - now
+      remainingSeconds: expiresAt - now
     };
   },
 
-  setCooldown(userId, command, durationSeconds) {
+  async setCooldown(userId, command, durationSeconds) {
     const expiresAt = Math.floor(Date.now() / 1000) + durationSeconds;
-    stmtSetCooldown.run(userId, command, expiresAt);
+    const sql = `
+      INSERT INTO cooldowns (user_id, command, expires_at)
+      VALUES ($1, $2, $3)
+      ON CONFLICT(user_id, command) DO UPDATE SET expires_at = $3;
+    `;
+    await query(sql, [userId, command, expiresAt]);
     return expiresAt;
   },
 
-  applyEffectiveCooldown(userId, command, baseSeconds) {
-    const effective = this.getEffectiveCooldown(userId, baseSeconds);
-    return this.setCooldown(userId, command, effective);
+  async applyEffectiveCooldown(userId, command, baseSeconds) {
+    const effective = await this.getEffectiveCooldown(userId, baseSeconds);
+    return await this.setCooldown(userId, command, effective);
   },
 
-  resetCooldown(userId, command) {
-    stmtRemoveCooldown.run(userId, command);
+  async resetCooldown(userId, command) {
+    await query('DELETE FROM cooldowns WHERE user_id = $1 AND command = $2;', [userId, command]);
   },
 
-  cleanExpired() {
+  async cleanExpired() {
     const now = Math.floor(Date.now() / 1000);
-    stmtCleanExpired.run(now);
+    await query('DELETE FROM cooldowns WHERE expires_at <= $1;', [now]);
   }
 };
 

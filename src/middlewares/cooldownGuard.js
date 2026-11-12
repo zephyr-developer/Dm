@@ -9,10 +9,10 @@ export function createCooldownGuard(commandName, baseDurationSeconds) {
       return next();
     }
 
-    const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, commandName);
+    const { onCooldown, remainingSeconds } = await cooldownRepo.checkCooldown(userId, commandName);
 
     if (onCooldown) {
-      const isPremium = userRepo.isPremium(userId);
+      const isPremium = await userRepo.isPremium(userId);
       let waitMsg = `⏳ <b>Slow down!</b> Wait <b>${formatTime(remainingSeconds)}</b> before using <code>/${commandName}</code> again.`;
 
       if (!isPremium) {
@@ -34,14 +34,14 @@ export function createCooldownGuard(commandName, baseDurationSeconds) {
     await next();
 
     // Set effective cooldown (50% reduction for Premium)
-    cooldownRepo.applyEffectiveCooldown(userId, commandName, baseDurationSeconds);
+    await cooldownRepo.applyEffectiveCooldown(userId, commandName, baseDurationSeconds);
   };
 }
 
-export function enforceCooldown(userId, commandName, baseDurationSeconds) {
-  const { onCooldown, remainingSeconds } = cooldownRepo.checkCooldown(userId, commandName);
+export async function enforceCooldown(userId, commandName, baseDurationSeconds) {
+  const { onCooldown, remainingSeconds } = await cooldownRepo.checkCooldown(userId, commandName);
   if (onCooldown) {
-    const isPremium = userRepo.isPremium(userId);
+    const isPremium = await userRepo.isPremium(userId);
     let message = `⏳ Cooldown active! Wait ${formatTime(remainingSeconds)}.`;
     if (!isPremium) {
       const premiumWait = Math.max(3, Math.floor(baseDurationSeconds * 0.5));
@@ -50,7 +50,7 @@ export function enforceCooldown(userId, commandName, baseDurationSeconds) {
     return { allowed: false, remainingSeconds, message };
   }
 
-  cooldownRepo.applyEffectiveCooldown(userId, commandName, baseDurationSeconds);
+  await cooldownRepo.applyEffectiveCooldown(userId, commandName, baseDurationSeconds);
   return { allowed: true, remainingSeconds: 0 };
 }
 

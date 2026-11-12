@@ -4,7 +4,7 @@ import inventoryRepo from '../../database/inventoryRepo.js';
 import { getCraftableItems, getItem, findItem, items } from '../../config/items.js';
 import { formatCoins } from '../../utils/formatters.js';
 
-function buildCraftMenu(userId) {
+async function buildCraftMenu(userId) {
   const craftables = getCraftableItems();
   let text = `🔨 <b>TeleMemer Forge & Crafting Workshop</b>\n` +
     `Combine items from your travels to forge rare items and collectibles.\n` +
@@ -12,12 +12,12 @@ function buildCraftMenu(userId) {
 
   const keyboard = new InlineKeyboard();
 
-  craftables.forEach(c => {
+  for (const c of craftables) {
     let canCraft = true;
     let recipeDetails = [];
 
     for (const [matId, reqQty] of Object.entries(c.craftRecipe)) {
-      const owned = inventoryRepo.getItem(userId, matId);
+      const owned = await inventoryRepo.getItem(userId, matId);
       const matItem = items[matId] || { name: matId, emoji: '📦' };
       const status = owned >= reqQty ? '✅' : '❌';
       recipeDetails.push(`${status} ${matItem.emoji} ${matItem.name}: <b>${owned}/${reqQty}</b>`);
@@ -30,7 +30,7 @@ function buildCraftMenu(userId) {
 
     const buttonLabel = canCraft ? `🔨 Craft 1x ${c.name}` : `🔒 ${c.name} (Missing Mats)`;
     keyboard.text(buttonLabel, `craft:make:${c.id}:${userId}`).row();
-  });
+  }
 
   text += `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
     `👉 <i>To craft via text:</i> <code>/craft &lt;item_id&gt;</code>`;
@@ -46,13 +46,13 @@ export const craft = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.trim().split(/\s+/).slice(1);
     const itemQuery = args.join(' ');
 
     if (!itemQuery) {
-      const { text, keyboard } = buildCraftMenu(userId);
+      const { text, keyboard } = await buildCraftMenu(userId);
       return ctx.reply(text, {
         parse_mode: 'HTML',
         reply_markup: keyboard
@@ -70,7 +70,7 @@ export const craft = {
     // Verify materials
     const recipe = item.craftRecipe;
     for (const [matId, reqQty] of Object.entries(recipe)) {
-      const owned = inventoryRepo.getItem(userId, matId);
+      const owned = await inventoryRepo.getItem(userId, matId);
       if (owned < reqQty) {
         const mat = items[matId] || { name: matId, emoji: '📦' };
         return ctx.reply(
@@ -83,9 +83,9 @@ export const craft = {
 
     // Deduct materials and grant item
     for (const [matId, reqQty] of Object.entries(recipe)) {
-      inventoryRepo.removeItem(userId, matId, reqQty);
+      await inventoryRepo.removeItem(userId, matId, reqQty);
     }
-    inventoryRepo.addItem(userId, item.id, 1);
+    await inventoryRepo.addItem(userId, item.id, 1);
 
     return ctx.reply(
       `🔨 <b>CRAFTING SUCCESSFUL!</b>\n` +
@@ -108,7 +108,7 @@ export const craft = {
 
     const recipe = item.craftRecipe;
     for (const [matId, reqQty] of Object.entries(recipe)) {
-      const owned = inventoryRepo.getItem(targetUserId, matId);
+      const owned = await inventoryRepo.getItem(targetUserId, matId);
       if (owned < reqQty) {
         const mat = items[matId] || { name: matId, emoji: '📦' };
         return ctx.answerCallbackQuery({
@@ -120,11 +120,11 @@ export const craft = {
 
     // Deduct materials and grant item
     for (const [matId, reqQty] of Object.entries(recipe)) {
-      inventoryRepo.removeItem(targetUserId, matId, reqQty);
+      await inventoryRepo.removeItem(targetUserId, matId, reqQty);
     }
-    inventoryRepo.addItem(targetUserId, item.id, 1);
+    await inventoryRepo.addItem(targetUserId, item.id, 1);
 
-    const { text, keyboard } = buildCraftMenu(targetUserId);
+    const { text, keyboard } = await buildCraftMenu(targetUserId);
     await ctx.editMessageText(text, {
       parse_mode: 'HTML',
       reply_markup: keyboard

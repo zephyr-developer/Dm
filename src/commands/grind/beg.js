@@ -34,15 +34,15 @@ export const beg = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const luckInfo = getLuckBreakdown(userId);
-    const roll = rollLuck(userId, 0, 100);
+    const luckInfo = await getLuckBreakdown(userId);
+    const roll = await rollLuck(userId, 0, 100);
 
     // 0–25: Rejection (If roll < 25)
     if (roll <= 25) {
       const npc = pickRandom(REJECTION_NPCS);
-      const xpRes = addXp(userId, randomBetween(10, 15));
+      const xpRes = await addXp(userId, randomBetween(10, 15));
       return ctx.reply(
         `🥺 <b>${npc.name}</b> ${npc.text}\n` +
         `⭐ +${xpRes.earnedXp} XP for trying.` +
@@ -61,9 +61,9 @@ export const beg = {
     } else {
       // 91+: Big generous donor + item chance
       earnedCoins = randomBetween(1500, 3500);
-      if (checkDropChance(userId, 0.25)) {
+      if (await checkDropChance(userId, 0.25)) {
         const bonusItem = pickRandom(['garbage', 'worm']);
-        inventoryRepo.addItem(userId, bonusItem, 1);
+        await inventoryRepo.addItem(userId, bonusItem, 1);
         const itemObj = items[bonusItem];
         extraItemMsg = `\n🎁 They also tossed you 1x ${itemObj.emoji} <b>${itemObj.name}</b>!`;
       }
@@ -74,8 +74,12 @@ export const beg = {
       earnedCoins = Math.floor(earnedCoins * (1 + (luckInfo.totalBonus / 200)));
     }
 
-    userRepo.updateWallet(userId, earnedCoins);
-    const xpResult = addXp(userId);
+    await userRepo.updateCoins(userId, {
+      walletDelta: earnedCoins,
+      sourceCommand: '/beg',
+      details: `Pity handout from ${donor}`
+    });
+    const xpResult = await addXp(userId);
 
     let luckNotice = '';
     if (luckInfo.customLuck > 0) {

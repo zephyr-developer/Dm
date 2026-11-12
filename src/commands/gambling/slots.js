@@ -13,7 +13,7 @@ export const slots = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.trim().split(/\s+/).slice(1);
     const betInput = args[0]?.toLowerCase();
@@ -53,10 +53,14 @@ export const slots = {
       return ctx.reply(`💸 You don't have enough coins in your wallet! (Wallet: ${formatCoins(user.wallet)})`);
     }
 
-    // Deduct bet immediately
-    userRepo.updateWallet(userId, -bet);
+    // Deduct bet immediately with currency log
+    await userRepo.updateCoins(userId, {
+      walletDelta: -bet,
+      sourceCommand: '/slots',
+      details: `Slots Bet: 🪙 ${bet.toLocaleString()}`
+    });
 
-    const luckInfo = getLuckBreakdown(userId);
+    const luckInfo = await getLuckBreakdown(userId);
 
     // Spin 3 symbols
     let s1 = pickRandom(SLOT_SYMBOLS);
@@ -108,11 +112,17 @@ export const slots = {
 
     const payout = Math.floor(bet * multiplier);
     if (payout > 0) {
-      userRepo.updateWallet(userId, payout);
+      const cleanTitle = title.replace(/<[^>]*>/g, '').trim();
+      await userRepo.updateCoins(userId, {
+        walletDelta: payout,
+        sourceCommand: '/slots',
+        details: `Won Slots (${cleanTitle})`
+      });
     }
 
-    const xpRes = addXp(userId, multiplier > 0 ? 25 : 10);
-    const updatedWallet = userRepo.getUser(userId)?.wallet || 0;
+    const xpRes = await addXp(userId, multiplier > 0 ? 25 : 10);
+    const updatedUser = await userRepo.getUser(userId);
+    const updatedWallet = updatedUser?.wallet || 0;
     let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
     const display = `🎰 <b>SLOT REELS SPINNING...</b>${luckTag}\n\n` +

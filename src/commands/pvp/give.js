@@ -11,17 +11,17 @@ export const give = {
 
   async execute(ctx) {
     const callerId = ctx.from.id;
-    const caller = userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
+    const caller = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
     let target = null;
     let rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
 
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      target = userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
     } else if (rawArgs[0]?.startsWith('@')) {
       const username = rawArgs[0];
-      target = userRepo.getUserByUsername(username);
+      target = await userRepo.getUserByUsername(username);
       rawArgs = rawArgs.slice(1);
     }
 
@@ -57,13 +57,22 @@ export const give = {
         return ctx.reply('❌ Please specify a valid amount of coins to transfer.');
       }
 
-      if (caller.wallet < amount) {
+      const callerWallet = Number(caller.wallet || 0);
+      if (callerWallet < amount) {
         return ctx.reply(
-          `💸 You don't have enough coins in your wallet! (You have ${formatCoins(caller.wallet)}, trying to send ${formatCoins(amount)})`
+          `💸 You don't have enough coins in your wallet! (You have ${formatCoins(callerWallet)}, trying to send ${formatCoins(amount)})`
         );
       }
 
-      const res = userRepo.transferWallet(callerId, target.user_id, amount, 0.05);
+      const res = await userRepo.transferWallet(
+        callerId,
+        target.user_id,
+        amount,
+        0.05,
+        caller.username || caller.first_name,
+        target.username || target.first_name
+      );
+
       if (!res.success) {
         return ctx.reply(`❌ Transfer failed: ${res.reason}`);
       }
@@ -72,7 +81,7 @@ export const give = {
         `🎁 <b>Transfer Complete!</b>\n` +
         `Transferred <b>${formatCoins(res.netAmount)}</b> to <b>${sanitizeHtml(target.first_name)}</b>!\n\n` +
         `🔥 <b>Tax Burned (5%):</b> ${formatCoins(res.tax)}\n` +
-        `👛 <b>Your Remaining Wallet:</b> ${formatCoins(caller.wallet - amount)}`,
+        `👛 <b>Your Remaining Wallet:</b> ${formatCoins(callerWallet - amount)}`,
         { parse_mode: 'HTML' }
       );
     }
@@ -94,7 +103,7 @@ export const give = {
       return ctx.reply(`❌ Unknown item "<b>${itemQuery}</b>". Run <code>/inv</code> to check your inventory.`, { parse_mode: 'HTML' });
     }
 
-    const ownedQty = inventoryRepo.getItem(callerId, item.id);
+    const ownedQty = await inventoryRepo.getItem(callerId, item.id);
     if (ownedQty < quantity) {
       return ctx.reply(
         `🎒 You only own <b>${ownedQty}x</b> ${item.emoji} <b>${item.name}</b>!`,
@@ -102,8 +111,8 @@ export const give = {
       );
     }
 
-    inventoryRepo.removeItem(callerId, item.id, quantity);
-    inventoryRepo.addItem(target.user_id, item.id, quantity);
+    await inventoryRepo.removeItem(callerId, item.id, quantity);
+    await inventoryRepo.addItem(target.user_id, item.id, quantity);
 
     return ctx.reply(
       `🎁 <b>Gift Delivered!</b>\n` +

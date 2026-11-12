@@ -11,7 +11,7 @@ export const sell = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.trim().split(/\s+/).slice(1);
     const firstArg = args[0]?.toLowerCase();
@@ -31,7 +31,7 @@ export const sell = {
     // CASE 1: /sell all (liquidate all 'loot' items)
     // ==========================================
     if (firstArg === 'all') {
-      const inventory = inventoryRepo.getUserInventory(userId);
+      const inventory = await inventoryRepo.getUserInventory(userId);
       const lootItems = inventory.filter(entry => {
         const itm = items[entry.item_id];
         return itm && itm.type === 'loot' && entry.quantity > 0;
@@ -48,18 +48,22 @@ export const sell = {
         const itm = items[entry.item_id];
         const earned = itm.sellPrice * entry.quantity;
         totalEarned += earned;
-        inventoryRepo.removeItem(userId, entry.item_id, entry.quantity);
+        await inventoryRepo.removeItem(userId, entry.item_id, entry.quantity);
         summaryLines.push(`• ${entry.quantity}x ${itm.emoji} ${itm.name} → ${formatCoins(earned)}`);
       }
 
-      userRepo.updateWallet(userId, totalEarned);
+      const updated = await userRepo.updateCoins(userId, {
+        walletDelta: totalEarned,
+        sourceCommand: '/sell all',
+        details: `Liquidated ${lootItems.length} loot stacks`
+      });
 
       return ctx.reply(
         `💰 <b>Liquidated All Loot!</b>\n` +
         `Sold all your hunted game, fish, worms, and raw scrap:\n\n` +
         summaryLines.join('\n') +
         `\n\n🪙 <b>Total Payout:</b> <b>${formatCoins(totalEarned)}</b>\n` +
-        `👛 <b>New Wallet:</b> ${formatCoins(user.wallet + totalEarned)}`,
+        `👛 <b>New Wallet:</b> ${formatCoins(updated.wallet)}`,
         { parse_mode: 'HTML' }
       );
     }
@@ -86,7 +90,7 @@ export const sell = {
       return ctx.reply(`❌ Could not identify an item called "<b>${itemQuery}</b>".`, { parse_mode: 'HTML' });
     }
 
-    const ownedQuantity = inventoryRepo.getItem(userId, item.id);
+    const ownedQuantity = await inventoryRepo.getItem(userId, item.id);
     if (ownedQuantity <= 0) {
       return ctx.reply(`🎒 You don't own any ${item.emoji} <b>${item.name}</b> to sell!`, { parse_mode: 'HTML' });
     }
@@ -107,14 +111,18 @@ export const sell = {
     }
 
     const totalPayout = item.sellPrice * quantity;
-    inventoryRepo.removeItem(userId, item.id, quantity);
-    userRepo.updateWallet(userId, totalPayout);
+    await inventoryRepo.removeItem(userId, item.id, quantity);
+    const updated = await userRepo.updateCoins(userId, {
+      walletDelta: totalPayout,
+      sourceCommand: '/sell',
+      details: `Sold ${quantity}x ${item.name} (${item.emoji})`
+    });
 
     return ctx.reply(
       `🤝 <b>Deal Complete!</b>\n` +
       `Sold <b>${quantity}x ${item.emoji} ${item.name}</b> to the merchant for <b>${formatCoins(totalPayout)}</b>.\n\n` +
       `🎒 <b>Remaining:</b> ${ownedQuantity - quantity}x ${item.name}\n` +
-      `👛 <b>New Wallet:</b> ${formatCoins(user.wallet + totalPayout)}`,
+      `👛 <b>New Wallet:</b> ${formatCoins(updated.wallet)}`,
       { parse_mode: 'HTML' }
     );
   }

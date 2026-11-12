@@ -5,8 +5,8 @@ import { formatCoins, randomBetween, pickRandom } from './formatters.js';
 
 export async function handleDeath(ctx, userId, reason = 'a fatal accident') {
   // 1. Check if user has a Life Saver in inventory
-  if (inventoryRepo.hasItem(userId, 'lifesaver', 1)) {
-    inventoryRepo.removeItem(userId, 'lifesaver', 1);
+  if (await inventoryRepo.hasItem(userId, 'lifesaver', 1)) {
+    await inventoryRepo.removeItem(userId, 'lifesaver', 1);
     return {
       survived: true,
       coinsLost: 0,
@@ -16,23 +16,27 @@ export async function handleDeath(ctx, userId, reason = 'a fatal accident') {
   }
 
   // 2. Player died: calculate coin loss (30% to 60% of wallet)
-  const user = userRepo.getUser(userId);
-  const currentWallet = user ? user.wallet : 0;
+  const user = await userRepo.getUser(userId);
+  const currentWallet = user ? Number(user.wallet) : 0;
   let coinsLost = 0;
 
   if (currentWallet > 0) {
     const lossPercent = randomBetween(30, 60) / 100;
     coinsLost = Math.floor(currentWallet * lossPercent);
-    userRepo.updateWallet(userId, -coinsLost);
+    await userRepo.updateCoins(userId, {
+      walletDelta: -coinsLost,
+      sourceCommand: '/death',
+      details: `Succumbed to fatal accident: ${reason}`
+    });
   }
 
   // 3. Check Apple buff: if active, prevent item loss!
-  const hasAppleBuff = inventoryRepo.hasBuff(userId, 'apple');
+  const hasAppleBuff = await inventoryRepo.hasBuff(userId, 'apple');
   let itemLost = null;
 
   if (!hasAppleBuff) {
     const collectibleIds = new Set(getCollectibleItemIds());
-    const inventory = inventoryRepo.getUserInventory(userId);
+    const inventory = await inventoryRepo.getUserInventory(userId);
     const eligibleItems = inventory.filter(inv => !collectibleIds.has(inv.item_id) && inv.quantity > 0);
 
     if (eligibleItems.length > 0) {
@@ -40,7 +44,7 @@ export async function handleDeath(ctx, userId, reason = 'a fatal accident') {
       const itemConfig = items[chosen.item_id] || { name: chosen.item_id, emoji: '📦' };
       const lostQuantity = Math.min(chosen.quantity, randomBetween(1, 2));
 
-      inventoryRepo.removeItem(userId, chosen.item_id, lostQuantity);
+      await inventoryRepo.removeItem(userId, chosen.item_id, lostQuantity);
       itemLost = {
         item_id: chosen.item_id,
         name: itemConfig.name,

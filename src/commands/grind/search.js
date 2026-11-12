@@ -126,7 +126,7 @@ export const search = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     // Pick 3 random distinct locations
     const allKeys = Object.keys(SEARCH_LOCATIONS);
@@ -159,7 +159,7 @@ export const search = {
       return ctx.answerCallbackQuery({ text: 'Location not found!' });
     }
 
-    const luckInfo = getLuckBreakdown(targetUserId);
+    const luckInfo = await getLuckBreakdown(targetUserId);
     // Luck reduces death chance and boosts rewards
     const deathReduction = luckInfo.totalBonus / 400;
     const effectiveDeathChance = Math.max(0.01, location.deathChance - deathReduction);
@@ -174,18 +174,22 @@ export const search = {
     // Success! Calculate coins
     const baseCoins = randomBetween(location.coinRange[0], location.coinRange[1]);
     const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 150)));
-    userRepo.updateWallet(targetUserId, earnedCoins);
+    await userRepo.updateCoins(targetUserId, {
+      walletDelta: earnedCoins,
+      sourceCommand: '/search',
+      details: `Searched ${location.name} (${location.emoji})`
+    });
 
     // Roll for item drop with luck multiplier
     let dropMsg = '';
-    if (location.itemPool.length > 0 && checkDropChance(targetUserId, 0.40)) {
+    if (location.itemPool.length > 0 && (await checkDropChance(targetUserId, 0.40))) {
       const itemId = pickRandom(location.itemPool);
-      inventoryRepo.addItem(targetUserId, itemId, 1);
+      await inventoryRepo.addItem(targetUserId, itemId, 1);
       const itm = items[itemId] || { emoji: '📦', name: itemId };
       dropMsg = `\n🎁 You also uncovered 1x ${itm.emoji} <b>${itm.name}</b>!`;
     }
 
-    const xpResult = addXp(targetUserId);
+    const xpResult = await addXp(targetUserId);
 
     let luckTag = '';
     if (luckInfo.customLuck > 0) {

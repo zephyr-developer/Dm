@@ -13,9 +13,9 @@ export const hunt = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    if (!inventoryRepo.hasItem(userId, 'rifle', 1)) {
+    if (!(await inventoryRepo.hasItem(userId, 'rifle', 1))) {
       return ctx.reply(
         `🔫 <b>You need a Hunting Rifle to go hunting!</b>\n` +
         `Visit the shop to purchase one: <code>/buy rifle</code> (Cost: 🪙 25,000)`,
@@ -23,13 +23,13 @@ export const hunt = {
       );
     }
 
-    const luckInfo = getLuckBreakdown(userId);
+    const luckInfo = await getLuckBreakdown(userId);
 
     // Break chance (reduced if high luck)
     const breakProb = Math.max(0.01, 0.05 - (luckInfo.totalBonus / 2000));
     let rifleBroke = false;
     if (Math.random() < breakProb) {
-      inventoryRepo.removeItem(userId, 'rifle', 1);
+      await inventoryRepo.removeItem(userId, 'rifle', 1);
       rifleBroke = true;
     }
 
@@ -38,11 +38,15 @@ export const hunt = {
       : '';
 
     // Check for rare Dragon: 1% base chance boosted by luckEngine
-    if (checkDropChance(userId, 0.01)) {
-      inventoryRepo.addItem(userId, 'dragon', 1);
+    if (await checkDropChance(userId, 0.01)) {
+      await inventoryRepo.addItem(userId, 'dragon', 1);
       const bonusCoins = Math.floor(randomBetween(5000, 15000) * (1 + (luckInfo.totalBonus / 200)));
-      userRepo.updateWallet(userId, bonusCoins);
-      const xpRes = addXp(userId, 100);
+      await userRepo.updateCoins(userId, {
+        walletDelta: bonusCoins,
+        sourceCommand: '/hunt',
+        details: 'Slayed Legendary Mythic Dragon'
+      });
+      const xpRes = await addXp(userId, 100);
 
       const dragonItem = items.dragon;
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
@@ -59,11 +63,11 @@ export const hunt = {
       );
     }
 
-    const roll = rollLuck(userId, 1, 100);
+    const roll = await rollLuck(userId, 1, 100);
 
     // 20% nothing (Roll <= 20)
     if (roll <= 20) {
-      const xpRes = addXp(userId, 15);
+      const xpRes = await addXp(userId, 15);
       return ctx.reply(
         `🔫 You stalked the dark forest for 30 minutes, but all the animals were frightened away by your loud footsteps.\n` +
         `⭐ +${xpRes.earnedXp} XP` +
@@ -75,12 +79,16 @@ export const hunt = {
 
     // High roll: Both Boar & Deer + coins
     if (roll > 80) {
-      inventoryRepo.addItem(userId, 'boar', 1);
-      inventoryRepo.addItem(userId, 'deer', 1);
+      await inventoryRepo.addItem(userId, 'boar', 1);
+      await inventoryRepo.addItem(userId, 'deer', 1);
       const baseCoins = randomBetween(1000, 3000);
       const foundCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
-      userRepo.updateWallet(userId, foundCoins);
-      const xpRes = addXp(userId, randomBetween(35, 50));
+      await userRepo.updateCoins(userId, {
+        walletDelta: foundCoins,
+        sourceCommand: '/hunt',
+        details: 'Double Hunt (Boar & Deer)'
+      });
+      const xpRes = await addXp(userId, randomBetween(35, 50));
 
       return ctx.reply(
         `🎯 <b>DOUBLE KILL!</b>\n` +
@@ -94,9 +102,9 @@ export const hunt = {
 
     // Standard game: Boar or Deer
     const targetPrey = Math.random() < 0.5 ? 'boar' : 'deer';
-    inventoryRepo.addItem(userId, targetPrey, 1);
+    await inventoryRepo.addItem(userId, targetPrey, 1);
     const preyObj = items[targetPrey];
-    const xpRes = addXp(userId, randomBetween(20, 35));
+    const xpRes = await addXp(userId, randomBetween(20, 35));
 
     return ctx.reply(
       `🔫 <b>Direct Hit!</b> You brought down 1x ${preyObj.emoji} <b>${preyObj.name}</b>!\n` +

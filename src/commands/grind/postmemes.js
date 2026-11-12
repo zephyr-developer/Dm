@@ -14,9 +14,9 @@ export const postmemes = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    if (!inventoryRepo.hasItem(userId, 'laptop', 1)) {
+    if (!(await inventoryRepo.hasItem(userId, 'laptop', 1))) {
       return ctx.reply(
         `💻 <b>You need a Laptop to post memes!</b>\n` +
         `Visit the shop to purchase one: <code>/buy laptop</code> (Cost: 🪙 20,000)`,
@@ -45,8 +45,8 @@ export const postmemes = {
     const genre = parts[1];
     const targetUserId = Number(parts[2]);
 
-    const luckInfo = getLuckBreakdown(targetUserId);
-    const roll = rollLuck(targetUserId, 1, 100);
+    const luckInfo = await getLuckBreakdown(targetUserId);
+    const roll = await rollLuck(targetUserId, 1, 100);
 
     // 1. Downvoted (Roll <= 20)
     if (roll <= 20) {
@@ -54,7 +54,7 @@ export const postmemes = {
       // 35% chance laptop breaks on rage (reduced by luck)
       const breakProb = Math.max(0.05, 0.35 - (luckInfo.totalBonus / 500));
       if (Math.random() < breakProb) {
-        inventoryRepo.removeItem(targetUserId, 'laptop', 1);
+        await inventoryRepo.removeItem(targetUserId, 'laptop', 1);
         laptopBroke = true;
       }
 
@@ -62,7 +62,7 @@ export const postmemes = {
         ? `\n\n💥 <b>RAGE SMASH!</b> You raged at the comment section and smashed your 💻 <b>Laptop</b> into pieces! Buy a new one with <code>/buy laptop</code>.`
         : '';
 
-      const xpRes = addXp(targetUserId, 15);
+      const xpRes = await addXp(targetUserId, 15);
       const text = `📉 <b>DOWNVOTED TO OBLIVION!</b>\n` +
         `Your <b>${genre}</b> meme received 0 upvotes, was branded "cringe" by Reddit moderators, and was deleted.\n` +
         `⭐ +${xpRes.earnedXp} XP` +
@@ -77,17 +77,21 @@ export const postmemes = {
     if (roll > 80) {
       const baseCoins = randomBetween(3500, 7000);
       const viralCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 150)));
-      userRepo.updateWallet(targetUserId, viralCoins);
+      await userRepo.updateCoins(targetUserId, {
+        walletDelta: viralCoins,
+        sourceCommand: '/postmemes',
+        details: `Viral Meme Ad Revenue (${genre})`
+      });
 
       let bonusText = '';
-      if (checkDropChance(targetUserId, 0.60)) {
+      if (await checkDropChance(targetUserId, 0.60)) {
         const bonusItemId = pickRandom(['banknote', 'ducttape']);
-        inventoryRepo.addItem(targetUserId, bonusItemId, 1);
+        await inventoryRepo.addItem(targetUserId, bonusItemId, 1);
         const bonusItem = items[bonusItemId];
         bonusText = `\n🎁 <b>Sponsorship Gift:</b> 1x ${bonusItem.emoji} <b>${bonusItem.name}</b>`;
       }
 
-      const xpRes = addXp(targetUserId, randomBetween(35, 55));
+      const xpRes = await addXp(targetUserId, randomBetween(35, 55));
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
       const viralText = `🚀 <b>VIRAL EXPLOSION!</b>${luckTag}\n` +
@@ -104,8 +108,12 @@ export const postmemes = {
     // 3. Decent engagement
     const baseCoins = randomBetween(800, 2500);
     const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
-    userRepo.updateWallet(targetUserId, earnedCoins);
-    const xpRes = addXp(targetUserId, randomBetween(20, 35));
+    await userRepo.updateCoins(targetUserId, {
+      walletDelta: earnedCoins,
+      sourceCommand: '/postmemes',
+      details: `Creator Fund Ad Revenue (${genre})`
+    });
+    const xpRes = await addXp(targetUserId, randomBetween(20, 35));
 
     const text = `📈 <b>Decent Reception!</b>\n` +
       `Your <b>${genre}</b> meme collected several hundred likes and a hearty chuckle.\n\n` +

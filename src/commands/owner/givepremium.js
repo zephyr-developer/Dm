@@ -16,17 +16,17 @@ export const givepremium = {
 
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      target = userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
       days = parseInt(rawArgs[0] || '30', 10);
     } else if (rawArgs[0]?.startsWith('@')) {
-      target = userRepo.getUserByUsername(rawArgs[0]);
+      target = await userRepo.getUserByUsername(rawArgs[0]);
       days = parseInt(rawArgs[1] || '30', 10);
     } else if (rawArgs[1]?.startsWith('@')) {
-      target = userRepo.getUserByUsername(rawArgs[1]);
+      target = await userRepo.getUserByUsername(rawArgs[1]);
       days = parseInt(rawArgs[0] || '30', 10);
     } else {
       // Default to caller
-      target = userRepo.getOrInitUser(ctx.from.id, ctx.from.username, ctx.from.first_name);
+      target = await userRepo.getOrInitUser(ctx.from.id, ctx.from.username, ctx.from.first_name);
       days = parseInt(rawArgs[0] || '30', 10);
     }
 
@@ -39,11 +39,11 @@ export const givepremium = {
     }
 
     const durationMs = days * 86400 * 1000;
-    const newExpiry = userRepo.setPremium(target.user_id, durationMs);
+    const newExpiry = await userRepo.setPremium(target.user_id, durationMs);
 
     // Welcome care package: 1x banknote + 1x lifesaver
-    inventoryRepo.addItem(target.user_id, 'banknote', 1);
-    inventoryRepo.addItem(target.user_id, 'lifesaver', 1);
+    await inventoryRepo.addItem(target.user_id, 'banknote', 1);
+    await inventoryRepo.addItem(target.user_id, 'lifesaver', 1);
 
     const expiryDateStr = new Date(newExpiry).toLocaleDateString('en-US', {
       year: 'numeric',

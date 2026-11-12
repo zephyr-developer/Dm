@@ -16,19 +16,19 @@ export const rob = {
     }
 
     const callerId = ctx.from.id;
-    const caller = userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
+    const caller = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
     // 1. Identify Target User
     let target = null;
 
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      target = userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
     } else {
       const args = ctx.message.text.trim().split(/\s+/).slice(1);
       const usernameArg = args[0];
       if (usernameArg) {
-        target = userRepo.getUserByUsername(usernameArg);
+        target = await userRepo.getUserByUsername(usernameArg);
       }
     }
 
@@ -53,23 +53,34 @@ export const rob = {
     }
 
     // 3. Minimum Wallet Balance Checks
-    if (caller.wallet < 2000) {
+    const callerWallet = Number(caller.wallet || 0);
+    const targetWallet = Number(target.wallet || 0);
+
+    if (callerWallet < 2000) {
       return ctx.reply('💸 You must have at least <b>🪙 2,000</b> in your wallet to cover legal fines if caught!', { parse_mode: 'HTML' });
     }
-    if (target.wallet < 1000) {
+    if (targetWallet < 1000) {
       return ctx.reply(`🤷 <b>${sanitizeHtml(target.first_name)}</b> is too broke to rob! They have less than 🪙 1,000 in their wallet.`, { parse_mode: 'HTML' });
     }
 
-    const callerLuck = getLuckBreakdown(callerId);
+    const callerLuck = await getLuckBreakdown(callerId);
 
     // 4. Check Defenses: LANDMINE (Luck helps detect & defuse)
-    if (inventoryRepo.hasBuff(target.user_id, 'landmine')) {
-      inventoryRepo.removeBuff(target.user_id, 'landmine');
+    if (await inventoryRepo.hasBuff(target.user_id, 'landmine')) {
+      await inventoryRepo.removeBuff(target.user_id, 'landmine');
       const detonateChance = Math.max(0.15, 0.50 - (callerLuck.totalBonus / 400));
       if (Math.random() < detonateChance) {
-        const fine = Math.min(caller.wallet, 2000);
-        userRepo.updateWallet(callerId, -fine);
-        userRepo.updateWallet(target.user_id, fine);
+        const fine = Math.min(callerWallet, 2000);
+        await userRepo.updateCoins(callerId, {
+          walletDelta: -fine,
+          sourceCommand: '/rob',
+          details: `Detonated @${target.username || target.first_name}'s Landmine fine`
+        });
+        await userRepo.updateCoins(target.user_id, {
+          walletDelta: fine,
+          sourceCommand: '/rob',
+          details: `Landmine bounty from @${caller.username || caller.first_name}`
+        });
 
         const deathRes = await handleDeath(ctx, callerId, `stepping on a live Landmine armed by ${target.first_name}`);
         const deathNotice = deathRes.survived
@@ -82,11 +93,19 @@ export const rob = {
     }
 
     // 5. Check Defenses: PADLOCK
-    if (inventoryRepo.hasBuff(target.user_id, 'padlock')) {
-      inventoryRepo.removeBuff(target.user_id, 'padlock');
-      const fine = Math.min(caller.wallet, 1500);
-      userRepo.updateWallet(callerId, -fine);
-      userRepo.updateWallet(target.user_id, fine);
+    if (await inventoryRepo.hasBuff(target.user_id, 'padlock')) {
+      await inventoryRepo.removeBuff(target.user_id, 'padlock');
+      const fine = Math.min(callerWallet, 1500);
+      await userRepo.updateCoins(callerId, {
+        walletDelta: -fine,
+        sourceCommand: '/rob',
+        details: `Tripped @${target.username || target.first_name}'s Padlock fine`
+      });
+      await userRepo.updateCoins(target.user_id, {
+        walletDelta: fine,
+        sourceCommand: '/rob',
+        details: `Padlock compensation from @${caller.username || caller.first_name}`
+      });
 
       return ctx.reply(
         `🔒 <b>CLANK!</b> You reached for <b>${sanitizeHtml(target.first_name)}</b>'s wallet, but your hands hit a heavy locked <b>Padlock</b>!\n` +
@@ -101,9 +120,17 @@ export const rob = {
 
     if (!isSuccess) {
       // Caught! Pay 25% of wallet (max 10,000)
-      const fine = Math.min(10000, Math.floor(caller.wallet * 0.25));
-      userRepo.updateWallet(callerId, -fine);
-      userRepo.updateWallet(target.user_id, fine);
+      const fine = Math.min(10000, Math.floor(callerWallet * 0.25));
+      await userRepo.updateCoins(callerId, {
+        walletDelta: -fine,
+        sourceCommand: '/rob',
+        details: `Caught pickpocketing @${target.username || target.first_name} fine`
+      });
+      await userRepo.updateCoins(target.user_id, {
+        walletDelta: fine,
+        sourceCommand: '/rob',
+        details: `Caught pickpocket @${caller.username || caller.first_name} compensation`
+      });
 
       return ctx.reply(
         `🚨 <b>CAUGHT RED-HANDED!</b>\n` +
@@ -131,9 +158,17 @@ export const rob = {
       stealPercentage = randomBetween(10, 25) / 100;
     }
 
-    const stolenAmount = Math.max(1, Math.floor(target.wallet * stealPercentage));
-    userRepo.updateWallet(target.user_id, -stolenAmount);
-    userRepo.updateWallet(callerId, stolenAmount);
+    const stolenAmount = Math.max(1, Math.floor(targetWallet * stealPercentage));
+    await userRepo.updateCoins(target.user_id, {
+      walletDelta: -stolenAmount,
+      sourceCommand: '/rob',
+      details: `Robbed by @${caller.username || caller.first_name}`
+    });
+    const updatedCaller = await userRepo.updateCoins(callerId, {
+      walletDelta: stolenAmount,
+      sourceCommand: '/rob',
+      details: `Robbed @${target.username || target.first_name}`
+    });
 
     let heistFlavor = 'You slickly slid your hands into their pocket';
     if (stealPercentage >= 0.80) {
@@ -147,7 +182,7 @@ export const rob = {
     return ctx.reply(
       `🥷 <b>Robbery Successful!</b>${luckTag}\n` +
       `${heistFlavor} and stole <b>${formatCoins(stolenAmount)}</b> from <b>${sanitizeHtml(target.first_name)}</b>!\n\n` +
-      `👛 <b>Your Wallet:</b> ${formatCoins(caller.wallet + stolenAmount)}`,
+      `👛 <b>Your Wallet:</b> ${formatCoins(updatedCaller.wallet)}`,
       { parse_mode: 'HTML' }
     );
   }

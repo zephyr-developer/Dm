@@ -31,16 +31,16 @@ export const generatecoin = {
 
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      target = userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
       amountStr = rawArgs[0];
     } else if (rawArgs[1]?.startsWith('@')) {
-      target = userRepo.getUserByUsername(rawArgs[1]);
+      target = await userRepo.getUserByUsername(rawArgs[1]);
       amountStr = rawArgs[0];
     } else if (rawArgs[0]?.startsWith('@')) {
-      target = userRepo.getUserByUsername(rawArgs[0]);
+      target = await userRepo.getUserByUsername(rawArgs[0]);
       amountStr = rawArgs[1];
     } else {
-      target = userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
+      target = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
       amountStr = rawArgs[0];
     }
 
@@ -53,8 +53,11 @@ export const generatecoin = {
       return ctx.reply('❌ Target user not found.');
     }
 
-    userRepo.addWallet(target.user_id, amount);
-    const updatedUser = userRepo.getUser(target.user_id);
+    const updatedUser = await userRepo.updateCoins(target.user_id, {
+      walletDelta: amount,
+      sourceCommand: '/generatecoin',
+      details: 'Admin Mint from Void (@tzhunyuan)'
+    });
 
     return ctx.reply(
       `💸 <b>Coins Minted from Void!</b>\n\n` +

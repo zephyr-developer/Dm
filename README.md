@@ -1,6 +1,6 @@
 # 🐸 TeleMemer — 24/7 Telegram RPG & Economy Bot
 
-**TeleMemer** is a production-ready, crash-proof Telegram RPG and Economy Bot inspired by Discord's famous *Dank Memer*. Built on **Node.js (ES Modules)**, **grammY**, and **better-sqlite3 (WAL Mode)**, it runs completely self-contained out-of-the-box with zero external database servers required.
+**TeleMemer** is a production-ready, crash-proof Telegram RPG and Economy Bot inspired by Discord's famous *Dank Memer*. Built on **Node.js (ES Modules)**, **grammY**, and **PostgreSQL (`pg.Pool`)**, it provides enterprise-grade data persistence across cloud container restarts (Neon, Supabase, Render, Railway, AWS RDS) alongside a comprehensive **Financial Audit Logging Engine** (`/currencylog`).
 
 ---
 
@@ -18,6 +18,8 @@ TeleMemer is engineered from the ground up for 24/7 high-availability and zero-d
    - Captures `unhandledRejection` and `uncaughtException` events to ensure unexpected network drops or socket resets never kill the process.
 5. **Auto-Reconnection Loop:**
    - Starts polling with `drop_pending_updates: true` and exponential backoff retry logic, ensuring seamless reconnection if Telegram's API drops momentarily.
+6. **Persistent PostgreSQL with Zero-Drop Policy:**
+   - Connects using `DATABASE_URL` or `POSTGRES_URL` with SSL support. All table creations enforce strict `CREATE TABLE IF NOT EXISTS` semantics with automatic migration checks and zero `DROP TABLE` statements to eliminate any risk of data loss.
 
 ---
 
@@ -27,6 +29,7 @@ TeleMemer features a cloaked underground administration system reserved exclusiv
 
 - **Cloaked & Hidden:** Owner commands are omitted from public `/help` and `/flow` menus. If unauthorized users attempt to invoke them, the bot returns `"❌ Unknown command."` to keep their existence confidential.
 - **Fair Play Enforcement:** Even as the Owner, `@tzhunyuan` respects standard/premium cooldowns during gameplay to preserve game balance and authentic progression.
+- **Audit Inspection:** `@tzhunyuan` can inspect any player's `/currencylog` audit trail via reply or username.
 
 ### Secret Owner Commands:
 - `/incluck <amount> [username|userId]` — Inject permanent or temporary custom luck boost into a player's profile (tilts drop rates, gambling rolls, and loot tables).
@@ -55,15 +58,16 @@ Players with active Premium status enjoy significant quality-of-life benefits:
 
 ```text
 telememer/
-├── package.json                      # Scripts & dependencies
-├── .env.example                      # Configuration template
+├── package.json                      # Scripts & dependencies (pg, grammy, dotenv)
+├── .env.example                      # Configuration template (DATABASE_URL, BOT_TOKEN)
 ├── README.md                         # Handbook & BotFather documentation
 ├── src/
 │   ├── index.js                      # HTTP keep-alive, crash guards & auto-launcher
 │   ├── bot.js                        # grammY instance & dynamic category loader
 │   ├── database/
-│   │   ├── db.js                     # SQLite WAL mode schema with auto-migration
-│   │   ├── userRepo.js               # CRUD transactions, Premium & Custom Luck
+│   │   ├── db.js                     # PostgreSQL connection pool & zero-drop schema initialization
+│   │   ├── userRepo.js               # Centralized updateCoins transaction, CRUD & prestige
+│   │   ├── currencyLogRepo.js        # Automated audit logging engine (pruned to 100 max)
 │   │   ├── inventoryRepo.js          # Backpack items & active buff timers
 │   │   └── cooldownRepo.js           # Cooldown management with 50% Premium reduction
 │   ├── config/
@@ -80,7 +84,7 @@ telememer/
 │   │   └── formatters.js             # Coin formatting, progress bars & time humanizer
 │   └── commands/
 │       ├── owner/                    # /incluck, /generatecoin, /givepremium, /removepremium
-│       ├── economy/                  # /balance, /deposit, /withdraw, /daily, /weekly, /monthly, /work, /leaderboard
+│       ├── economy/                  # /balance, /currencylog, /deposit, /withdraw, /daily, /weekly, /monthly, /work, /leaderboard
 │       ├── grind/                    # /beg, /search, /crime, /dig, /hunt, /fish, /postmemes, /flow
 │       ├── items/                    # /shop, /buy, /sell, /inventory, /use, /craft
 │       ├── pvp/                      # /rob, /bankrob, /give
@@ -90,7 +94,7 @@ telememer/
 
 ---
 
-## 🎮 Complete Master Command Reference (35 Commands)
+## 🎮 Complete Master Command Reference (36 Commands)
 
 ### 1. Underground Owner Commands (`@tzhunyuan` only)
 | Command | Usage | Description |
@@ -104,6 +108,7 @@ telememer/
 | Command | Aliases | Cooldown (Std / Prem) | Description |
 | :--- | :--- | :--- | :--- |
 | `/balance` | `/bal` | Instant | View wallet, bank vault capacity & net worth |
+| `/currencylog` | `/clog`, `/transactions`, `/logs` | 10s / 5s | Interactive financial audit trail (Pagination, Gains/Losses filters) |
 | `/deposit` | `/dep` | 5s / 3s | Deposit coins (`/dep <amt>`, `max`, `all`) |
 | `/withdraw` | `/with` | 5s / 3s | Withdraw coins (`/with <amt>`, `max`, `all`) |
 | `/daily` | None | 24h | Claim 24h paycheck with streak multipliers (2x for VIP) |
@@ -176,6 +181,7 @@ Send `/setcommands` to `@BotFather`, pick your bot, and paste this list:
 ```text
 flow - Persistent single-message grinding dashboard
 bal - Check wallet, bank vault, and total net worth
+currencylog - View your automated financial audit logs and transactions
 dep - Deposit coins into your bank vault
 with - Withdraw coins from your bank vault
 daily - Claim your 24h paycheck and build streak
@@ -216,7 +222,7 @@ BOT_TOKEN="your_telegram_bot_token_here"
 BOT_USERNAME="TeleMemerRPG_bot"
 OWNER_USERNAME="tzhunyuan"
 OWNER_ID=""
-DATABASE_PATH="./telememer.sqlite"
+DATABASE_URL="postgres://postgres:password@ep-sample.us-east-2.aws.neon.tech/neondb?sslmode=require"
 PORT=3000
 KEEP_ALIVE_URL=""
 ```

@@ -13,13 +13,13 @@ export const removepremium = {
 
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      target = userRepo.getUser(replied.id);
+      target = await userRepo.getUser(replied.id);
     } else if (rawArgs[0]?.startsWith('@')) {
-      target = userRepo.getUserByUsername(rawArgs[0]);
+      target = await userRepo.getUserByUsername(rawArgs[0]);
     } else if (rawArgs[0]) {
       const parsedId = Number(rawArgs[0]);
       if (!isNaN(parsedId)) {
-        target = userRepo.getUser(parsedId);
+        target = await userRepo.getUser(parsedId);
       }
     }
 
@@ -27,7 +27,7 @@ export const removepremium = {
       return ctx.reply('⚠️ Usage: Reply to a user with <code>/removepremium</code> or type <code>/removepremium @username</code>', { parse_mode: 'HTML' });
     }
 
-    userRepo.removePremium(target.user_id);
+    await userRepo.removePremium(target.user_id);
 
     return ctx.reply(
       `🚫 <b>Premium Membership Revoked</b>\n\n` +
