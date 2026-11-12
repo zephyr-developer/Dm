@@ -2,7 +2,7 @@ import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
-import { formatCoins } from '../../utils/formatters.js';
+import { formatCoins, parseBet } from '../../utils/formatters.js';
 
 const MULTIPLIER_POOL = [0, 0.5, 1, 1, 1.5, 2, 3, 5, 'SKULL'];
 
@@ -41,7 +41,7 @@ function buildScratchKeyboard(userId, board, revealedIndices, isFinished = false
 export const scratch = {
   name: 'scratch',
   aliases: [],
-  description: 'Scratch 3 mystery multiplier tiles on a 3x3 scratchcard ticket',
+  description: 'Scratch 3 mystery multiplier tiles on a 3x3 scratchcard ticket (No Bet Limits)',
   cooldown: 15,
 
   async execute(ctx) {
@@ -52,38 +52,28 @@ export const scratch = {
       return ctx.reply('🎫 You already have an active scratchcard ticket! Finish scratching it first.');
     }
 
-    const args = ctx.message.text.trim().split(/\s+/).slice(1);
-    const betInput = args[0]?.toLowerCase();
+    const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
 
-    if (!betInput) {
+    if (!betStr) {
       return ctx.reply(
         `🎫 <b>Scratchcard Lottery</b>\n` +
-        `Usage: <code>/scratch &lt;bet&gt;</code> (Min: 🪙 1,000 | Max: 🪙 25,000)\n\n` +
+        `Usage: <code>/scratch &lt;bet|half|all&gt;</code> (Supports shorthand: 50k, 10m, 5b)\n\n` +
         `Pick 3 mystery tiles on the 3x3 grid to accumulate multipliers! Watch out for the 💀 Skull.\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         { parse_mode: 'HTML' }
       );
     }
 
-    let bet = 0;
-    if (betInput === 'all' || betInput === 'max') {
-      bet = Math.min(25000, user.wallet);
-    } else {
-      const parsed = parseInt(betInput.replace(/[,kKmM]/g, ''), 10);
-      if (isNaN(parsed) || parsed <= 0) {
-        return ctx.reply('❌ Please enter a valid positive number for your scratchcard bet.');
+    const { valid, error, bet } = parseBet(betStr, user.wallet);
+    if (!valid) {
+      if (error === 'INSUFFICIENT_FUNDS' || error === 'NO_COINS') {
+        return ctx.reply(`❌ You don't have enough coins in your wallet! You only have 🪙 ${Number(user.wallet || 0).toLocaleString()}.`);
       }
-      bet = parsed;
+      return ctx.reply('❌ Please enter a valid positive number for your scratchcard bet.');
     }
 
-    if (bet < 1000) {
-      return ctx.reply('❌ Minimum bet for a scratchcard is 🪙 1,000.');
-    }
-    if (bet > 25000) {
-      return ctx.reply('❌ Maximum bet for a scratchcard is 🪙 25,000.');
-    }
-    if (user.wallet < bet) {
-      return ctx.reply(`💸 You do not have enough coins in your wallet! (Wallet: ${formatCoins(user.wallet)})`);
+    if (bet <= 0) {
+      return ctx.reply('❌ Bet must be at least 🪙 1.');
     }
 
     // Deduct bet immediately with currency log

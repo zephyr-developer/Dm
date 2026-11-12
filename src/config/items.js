@@ -220,8 +220,8 @@ export const items = {
     id: 'adventureticket',
     name: 'Adventure Ticket',
     emoji: '🎟️',
-    description: 'Crafted pass for deep expeditions. Sells for a handsome price.',
-    buyPrice: null,
+    description: 'Pass for deep 3-stage /adventure expeditions. Can be purchased or crafted.',
+    buyPrice: 25000,
     sellPrice: 15000,
     type: 'consumable',
     craftRecipe: {

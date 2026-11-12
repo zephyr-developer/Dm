@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
-import { formatCoins } from '../../utils/formatters.js';
+import { formatCoins, parseBet } from '../../utils/formatters.js';
 
 const SUITS = ['♠️', '♥️', '♦️', '♣️'];
 const VALUES = [
@@ -60,7 +60,7 @@ const activeGames = new Map();
 export const blackjack = {
   name: 'blackjack',
   aliases: ['bj'],
-  description: 'Play a full game of soft-17 Blackjack with Double Down (Max: 100k)',
+  description: 'Play a full game of soft-17 Blackjack with Double Down (No Bet Limits)',
   cooldown: 15, // 8s for Premium
 
   async execute(ctx) {
@@ -71,45 +71,34 @@ export const blackjack = {
       return ctx.reply('🃏 You already have an active Blackjack hand! Finish it with the buttons on your game table.');
     }
 
-    const args = ctx.message.text.trim().split(/\s+/).slice(1);
-    const betInput = args[0]?.toLowerCase();
+    const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
 
-    if (!betInput) {
+    if (!betStr) {
       return ctx.reply(
         `🃏 <b>Blackjack (21)</b>\n` +
-        `Usage: <code>/bj &lt;bet&gt;</code> or <code>/bj all</code> (Min: 🪙 100 | Max: 🪙 100,000)\n\n` +
+        `Usage: <code>/bj &lt;bet|half|all&gt;</code> (Supports shorthand: 50k, 10m, 5b)\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         { parse_mode: 'HTML' }
       );
     }
 
-    let bet = 0;
-    const currentWallet = Number(user.wallet || 0);
-    if (betInput === 'all' || betInput === 'max') {
-      bet = Math.min(100000, currentWallet);
-    } else {
-      const parsed = parseInt(betInput.replace(/[,kKmM]/g, ''), 10);
-      if (isNaN(parsed) || parsed <= 0) {
-        return ctx.reply('❌ Please enter a valid positive number for your bet.');
+    const { valid, error, bet } = parseBet(betStr, user.wallet);
+    if (!valid) {
+      if (error === 'INSUFFICIENT_FUNDS' || error === 'NO_COINS') {
+        return ctx.reply(`❌ You don't have enough coins in your wallet! You only have 🪙 ${Number(user.wallet || 0).toLocaleString()}.`);
       }
-      bet = parsed;
+      return ctx.reply('❌ Please enter a valid positive number for your bet.');
     }
 
-    if (bet < 100) {
-      return ctx.reply('❌ Minimum bet for Blackjack is 🪙 100.');
-    }
-    if (bet > 100000) {
-      return ctx.reply('❌ Maximum bet for Blackjack is 🪙 100,000.');
-    }
-    if (currentWallet < bet) {
-      return ctx.reply(`💸 You do not have enough coins in your wallet! (Wallet: ${formatCoins(currentWallet)})`);
+    if (bet <= 0) {
+      return ctx.reply('❌ Bet must be at least 🪙 1.');
     }
 
     // Deduct bet immediately
     const afterBetUser = await userRepo.updateCoins(userId, {
       walletDelta: -bet,
       sourceCommand: '/blackjack',
-      details: `Blackjack Bet: ${formatCoins(bet)}`
+      details: `Blackjack Bet: 🪙 ${bet.toLocaleString()}`
     });
 
     const luckInfo = await getLuckBreakdown(userId);
@@ -236,14 +225,18 @@ export const blackjack = {
     // ACTION 2: DOUBLE DOWN
     // ==========================================
     if (action === 'double') {
-      if (Number(user.wallet || 0) < game.bet) {
-        return ctx.answerCallbackQuery({ text: 'Not enough coins to Double Down!', show_alert: true });
+      const currentWallet = Number(user?.wallet || 0);
+      if (currentWallet < game.bet) {
+        return ctx.answerCallbackQuery({
+          text: `❌ Not enough coins in your wallet to Double Down! (Need: 🪙 ${game.bet.toLocaleString()})`,
+          show_alert: true
+        });
       }
 
       await userRepo.updateCoins(targetUserId, {
         walletDelta: -game.bet,
         sourceCommand: '/blackjack',
-        details: `Blackjack Double Down (+${formatCoins(game.bet)})`
+        details: `Blackjack Double Down (+🪙 ${game.bet.toLocaleString()})`
       });
       game.bet *= 2;
 
@@ -258,11 +251,12 @@ export const blackjack = {
       const score = calculateHand(game.playerCards);
       if (score > 21) {
         activeGames.delete(targetUserId);
+        const updatedUser = await userRepo.getUser(targetUserId);
         const bustMsg = `💥 <b>BUSTED ON DOUBLE DOWN! (Score: ${score})</b>\n\n` +
           `👤 <b>Your Hand:</b> ${renderHand(game.playerCards)}\n` +
           `🤖 <b>Dealer Hand:</b> ${renderHand(game.dealerCards)} (Score: <b>${calculateHand(game.dealerCards)}</b>)\n\n` +
           `💸 You lost your doubled bet of <b>${formatCoins(game.bet)}</b>.\n` +
-          `👛 <b>Wallet:</b> ${formatCoins(user.wallet - (game.bet / 2))}`;
+          `👛 <b>Wallet:</b> ${formatCoins(updatedUser?.wallet || 0)}`;
 
         await ctx.editMessageText(bustMsg, { parse_mode: 'HTML' });
         return ctx.answerCallbackQuery({ text: 'Busted on Double Down!' });

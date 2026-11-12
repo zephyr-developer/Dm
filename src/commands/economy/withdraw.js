@@ -1,5 +1,6 @@
 import userRepo from '../../database/userRepo.js';
 import { formatCoins } from '../../utils/formatters.js';
+import { heistTargets } from '../../utils/heistState.js';
 
 export const withdraw = {
   name: 'withdraw',
@@ -9,6 +10,15 @@ export const withdraw = {
 
   async execute(ctx) {
     const userId = ctx.from.id;
+
+    // Check if the user's bank is currently under heist lockdown
+    if (heistTargets.has(userId) || heistTargets.has(Number(userId)) || heistTargets.has(String(userId))) {
+      return ctx.reply(
+        '🚨 <b>LOCKDOWN:</b> Your bank is currently being robbed! The vault doors are locked and you cannot move funds in or out right now!',
+        { parse_mode: 'HTML' }
+      );
+    }
+
     const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
     const args = ctx.message.text.split(/\s+/).slice(1);

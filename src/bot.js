@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import dotenv from 'dotenv';
 import registerUser from './middlewares/registerUser.js';
+import heistGuard from './middlewares/heistGuard.js';
 import cooldownRepo from './database/cooldownRepo.js';
 import userRepo from './database/userRepo.js';
 import { isOwner, ownerGuard } from './middlewares/ownerGuard.js';
@@ -23,6 +24,7 @@ export const callbackHandlers = new Map();
 
 // 1. Global Middlewares
 bot.use(registerUser);
+bot.use(heistGuard);
 
 // 24/7 Crash-Proof Error Handler: Catch all grammY / Telegram API errors
 bot.catch((err) => {

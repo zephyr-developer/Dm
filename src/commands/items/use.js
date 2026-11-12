@@ -1,8 +1,8 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
-import { findItem, items } from '../../config/items.js';
-import { formatCoins, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
+import { findItem } from '../../config/items.js';
+import { formatCoins, formatTime, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
 
 // In-memory active coin bomb drops: bombId -> { totalDrop, claimants: [{ userId, name, amount }] }
 const activeCoinBombs = new Map();
@@ -10,136 +10,111 @@ const activeCoinBombs = new Map();
 export const use = {
   name: 'use',
   aliases: [],
-  description: 'Use, consume, or deploy an item from your backpack',
+  description: 'Use, consume, or deploy items from your backpack in single or bulk amounts',
   cooldown: 2,
 
   async execute(ctx) {
     const userId = ctx.from.id;
     await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const args = ctx.message.text.trim().split(/\s+/).slice(1);
-    const itemQuery = args.join(' ');
+    // 1. Argument Parsing: extract user input from match or message text
+    let rawInput = (ctx.match || '').trim();
+    if (!rawInput && ctx.message?.text) {
+      rawInput = ctx.message.text.trim().split(/\s+/).slice(1).join(' ').trim();
+    }
 
-    if (!itemQuery) {
+    if (!rawInput) {
       return ctx.reply(
         `🎒 <b>Item Activation</b>\n` +
-        `Usage: <code>/use &lt;item_id&gt;</code>\n\n` +
+        `Usage: <code>/use &lt;item&gt; [quantity]</code>\n` +
+        `Examples: <code>/use banknote 100</code>, <code>/use banknote all</code>, <code>/use vaultlock 3</code>\n\n` +
         `<b>Usable Items:</b>\n` +
-        `• 📜 <code>banknote</code> - Expand bank vault space (+15k to +30k)\n` +
-        `• 🔒 <code>padlock</code> - Protect wallet against 1 robbery attempt (24h)\n` +
-        `• 💣 <code>landmine</code> - Trap wallet: 50% chance to kill robber (24h)\n` +
-        `• 🏦 <code>vaultlock</code> - Protect bank vault against 1 heist attempt (24h)\n` +
-        `• 🧲 <code>horseshoe</code> - +15% luck bonus on grinding (30m)\n` +
-        `• 🍎 <code>apple</code> - Protect items from loss on death (24h)\n` +
+        `• 📜 <code>banknote</code> - Expand bank vault space (+15k to +30k per note)\n` +
+        `• 🔒 <code>padlock</code> - Protect wallet against 1 robbery attempt (24h per lock)\n` +
+        `• 💣 <code>landmine</code> - Trap wallet: 50% chance to kill robber (24h per mine)\n` +
+        `• 🏦 <code>vaultlock</code> - Protect bank vault against 1 heist attempt (24h per lock)\n` +
+        `• 🧲 <code>horseshoe</code> - +15% luck bonus on grinding (30m per horseshoe)\n` +
+        `• 🍎 <code>apple</code> - Protect items from loss on death (24h per apple)\n` +
         `• 💣 <code>coinbomb</code> - Drop 10k–50k coins in chat for first 3 clickers!`,
         { parse_mode: 'HTML' }
       );
     }
 
+    const words = rawInput.split(/\s+/);
+    let quantityStr = null;
+    let itemQuery = '';
+
+    const lastWord = words[words.length - 1].toLowerCase();
+    const firstWord = words[0].toLowerCase();
+
+    // Check if the last word is a quantity (number, 'all', or 'max')
+    if (words.length > 1 && (/^\d+$/.test(lastWord) || lastWord === 'all' || lastWord === 'max')) {
+      quantityStr = lastWord;
+      itemQuery = words.slice(0, -1).join(' ');
+    // Or if the first word is a quantity (e.g. /use 100 banknote)
+    } else if (words.length > 1 && (/^\d+$/.test(firstWord) || firstWord === 'all' || firstWord === 'max')) {
+      quantityStr = firstWord;
+      itemQuery = words.slice(1).join(' ');
+    } else {
+      itemQuery = words.join(' ');
+    }
+
     const item = findItem(itemQuery);
     if (!item) {
-      return ctx.reply(`❌ Could not find an item called "<b>${itemQuery}</b>".`, { parse_mode: 'HTML' });
+      return ctx.reply(`❌ Could not find an item called "<b>${sanitizeHtml(itemQuery)}</b>".`, { parse_mode: 'HTML' });
     }
 
-    if (!(await inventoryRepo.hasItem(userId, item.id, 1))) {
-      return ctx.reply(`🎒 You do not have any ${item.emoji} <b>${item.name}</b> in your inventory!`, { parse_mode: 'HTML' });
+    // 2. Quantity Validation
+    const owned = await inventoryRepo.getItem(userId, item.id);
+    if (owned <= 0) {
+      return ctx.reply("❌ You don't own any of this item.", { parse_mode: 'HTML' });
+    }
+
+    let quantity = 1;
+    if (quantityStr === 'all' || quantityStr === 'max') {
+      quantity = owned;
+    } else if (quantityStr) {
+      const parsed = parseInt(quantityStr, 10);
+      if (isNaN(parsed) || parsed <= 0) {
+        return ctx.reply("❌ Please provide a valid positive quantity to use.", { parse_mode: 'HTML' });
+      }
+      quantity = parsed;
+    }
+
+    if (quantity > owned) {
+      return ctx.reply(`❌ You only have ${owned}x ${item.name}.`, { parse_mode: 'HTML' });
     }
 
     // ==========================================
-    // 1. BANK NOTE
+    // 1. BANK NOTE (BULK SUPPORT)
     // ==========================================
     if (item.id === 'banknote') {
-      await inventoryRepo.removeItem(userId, 'banknote', 1);
-      const bonusSpace = randomBetween(15000, 30000);
-      const updatedUser = await userRepo.increaseBankMax(userId, bonusSpace);
+      let totalAdded = 0;
+      for (let i = 0; i < quantity; i++) {
+        totalAdded += randomBetween(15000, 30000);
+      }
+
+      await inventoryRepo.removeItem(userId, 'banknote', quantity);
+      const updatedUser = await userRepo.increaseBankMax(userId, totalAdded);
 
       return ctx.reply(
-        `📜 <b>Bank Vault Expanded!</b>\n` +
-        `You filed your official <b>Bank Note</b> with the meme federal reserve.\n\n` +
-        `🏦 <b>Bank Capacity Added:</b> +${formatCoins(bonusSpace)}\n` +
+        `📜 You used <b>${quantity}x Bank Note</b> and expanded your bank capacity by <b>🪙 ${totalAdded.toLocaleString('en-US')}</b>!\n` +
         `🏛️ <b>New Bank Limit:</b> ${formatCoins(updatedUser.bank_max)}`,
         { parse_mode: 'HTML' }
       );
     }
 
     // ==========================================
-    // 2. PADLOCK
-    // ==========================================
-    if (item.id === 'padlock') {
-      await inventoryRepo.removeItem(userId, 'padlock', 1);
-      await inventoryRepo.setBuff(userId, 'padlock', 86400); // 24h
-
-      return ctx.reply(
-        `🔒 <b>Padlock Armed!</b>\n` +
-        `You snapped a heavy brass padlock onto your wallet!\n` +
-        `Your coins are shielded from the next <code>/rob</code> attempt for the next <b>24 hours</b> (or until breached).`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    // ==========================================
-    // 3. LANDMINE
-    // ==========================================
-    if (item.id === 'landmine') {
-      await inventoryRepo.removeItem(userId, 'landmine', 1);
-      await inventoryRepo.setBuff(userId, 'landmine', 86400); // 24h
-
-      return ctx.reply(
-        `💣 <b>Landmine Primed!</b>\n` +
-        `You rigged an explosive pressure plate inside your pocket lining!\n` +
-        `If someone attempts to <code>/rob</code> you in the next <b>24 hours</b>, there is a <b>50% chance</b> it detonates and instantly kills them!`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    // ==========================================
-    // 4. VAULT LOCK
-    // ==========================================
-    if (item.id === 'vaultlock') {
-      await inventoryRepo.removeItem(userId, 'vaultlock', 1);
-      const exact24hMs = Date.now() + 24 * 60 * 60 * 1000;
-      await inventoryRepo.setBuff(userId, 'vaultlock', exact24hMs);
-
-      return ctx.reply(
-        `🏦 Your <b>Vault Lock</b> is active! Your bank is protected from the next heist for 24 hours, or until someone attempts to rob it (whichever comes first).`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    // ==========================================
-    // 4. LUCKY HORSESHOE
-    // ==========================================
-    if (item.id === 'horseshoe') {
-      await inventoryRepo.removeItem(userId, 'horseshoe', 1);
-      await inventoryRepo.setBuff(userId, 'horseshoe', 1800); // 30 mins
-
-      return ctx.reply(
-        `🧲 <b>Lucky Horseshoe Activated!</b>\n` +
-        `You rubbed the lucky magnetic horseshoe!\n` +
-        `Enjoy <b>+15% luck bonus</b> on <code>/beg</code>, <code>/search</code>, <code>/crime</code>, <code>/dig</code>, <code>/hunt</code>, and <code>/fish</code> for the next <b>30 minutes</b>!`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    // ==========================================
-    // 5. APPLE
-    // ==========================================
-    if (item.id === 'apple') {
-      await inventoryRepo.removeItem(userId, 'apple', 1);
-      await inventoryRepo.setBuff(userId, 'apple', 86400); // 24h
-
-      return ctx.reply(
-        `🍎 <b>Crisp Apple Consumed!</b>\n` +
-        `An apple a day keeps death's greedy hands away!\n` +
-        `For the next <b>24 hours</b>, if you die during any grinding or crime activity, your <b>inventory items are 100% protected</b> from loss! (You will only risk coins).`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    // ==========================================
-    // 6. COIN BOMB
+    // 2. COIN BOMB (LIMITED TO 1)
     // ==========================================
     if (item.id === 'coinbomb') {
+      if (quantity > 1) {
+        return ctx.reply(
+          `❌ You can only use <b>1x Coin Bomb</b> at a time to prevent chat chaos!`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
       if (ctx.chat.type === 'private') {
         return ctx.reply('💣 Coin Bombs can only be detonated inside a group chat for players to race for!');
       }
@@ -166,6 +141,100 @@ export const use = {
         parse_mode: 'HTML',
         reply_markup: keyboard
       });
+    }
+
+    // ==========================================
+    // 3. VAULT LOCK (BULK BUFF: 24h per lock)
+    // ==========================================
+    if (item.id === 'vaultlock') {
+      await inventoryRepo.removeItem(userId, 'vaultlock', quantity);
+      const standardDuration = 86400; // 24 hours
+      const addedSeconds = standardDuration * quantity;
+      const existingRemaining = await inventoryRepo.getBuffRemaining(userId, 'vaultlock');
+      const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+      await inventoryRepo.setBuff(userId, 'vaultlock', newRemaining);
+
+      const durationStr = formatTime(newRemaining);
+      return ctx.reply(
+        `🏦 Your <b>Vault Lock</b> is active! Your bank is protected from the next heist for <b>${durationStr}</b>, or until someone attempts to rob it (whichever comes first).`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // ==========================================
+    // 4. PADLOCK (BULK BUFF: 24h per lock)
+    // ==========================================
+    if (item.id === 'padlock') {
+      await inventoryRepo.removeItem(userId, 'padlock', quantity);
+      const standardDuration = 86400; // 24 hours
+      const addedSeconds = standardDuration * quantity;
+      const existingRemaining = await inventoryRepo.getBuffRemaining(userId, 'padlock');
+      const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+      await inventoryRepo.setBuff(userId, 'padlock', newRemaining);
+
+      return ctx.reply(
+        `🔒 <b>Padlock Armed!</b>\n` +
+        `You snapped ${quantity > 1 ? `<b>${quantity}x</b> padlocks` : 'a heavy brass padlock'} onto your wallet!\n` +
+        `Your coins are shielded from robbery attempts for the next <b>${formatTime(newRemaining)}</b> (or until breached).`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // ==========================================
+    // 5. LANDMINE (BULK BUFF: 24h per mine)
+    // ==========================================
+    if (item.id === 'landmine') {
+      await inventoryRepo.removeItem(userId, 'landmine', quantity);
+      const standardDuration = 86400; // 24 hours
+      const addedSeconds = standardDuration * quantity;
+      const existingRemaining = await inventoryRepo.getBuffRemaining(userId, 'landmine');
+      const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+      await inventoryRepo.setBuff(userId, 'landmine', newRemaining);
+
+      return ctx.reply(
+        `💣 <b>Landmine Primed!</b>\n` +
+        `You rigged ${quantity > 1 ? `<b>${quantity}x</b> explosive pressure plates` : 'an explosive pressure plate'} inside your pocket lining!\n` +
+        `If someone attempts to <code>/rob</code> you in the next <b>${formatTime(newRemaining)}</b>, there is a <b>50% chance</b> it detonates and instantly kills them!`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // ==========================================
+    // 6. LUCKY HORSESHOE (BULK BUFF: 30m per shoe)
+    // ==========================================
+    if (item.id === 'horseshoe') {
+      await inventoryRepo.removeItem(userId, 'horseshoe', quantity);
+      const standardDuration = 1800; // 30 minutes
+      const addedSeconds = standardDuration * quantity;
+      const existingRemaining = await inventoryRepo.getBuffRemaining(userId, 'horseshoe');
+      const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+      await inventoryRepo.setBuff(userId, 'horseshoe', newRemaining);
+
+      return ctx.reply(
+        `🧲 <b>Lucky Horseshoe Activated!</b>\n` +
+        `You activated <b>${quantity}x Lucky Horseshoe</b>!\n` +
+        `Enjoy <b>+15% luck bonus</b> on <code>/beg</code>, <code>/search</code>, <code>/crime</code>, <code>/dig</code>, <code>/hunt</code>, and <code>/fish</code> for the next <b>${formatTime(newRemaining)}</b>!`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // ==========================================
+    // 7. APPLE (BULK BUFF: 24h per apple)
+    // ==========================================
+    if (item.id === 'apple') {
+      await inventoryRepo.removeItem(userId, 'apple', quantity);
+      const standardDuration = 86400; // 24 hours
+      const addedSeconds = standardDuration * quantity;
+      const existingRemaining = await inventoryRepo.getBuffRemaining(userId, 'apple');
+      const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+      await inventoryRepo.setBuff(userId, 'apple', newRemaining);
+
+      return ctx.reply(
+        `🍎 <b>Crisp Apple Consumed!</b>\n` +
+        `You consumed <b>${quantity}x Apple</b>!\n` +
+        `For the next <b>${formatTime(newRemaining)}</b>, if you die during any grinding or crime activity, your <b>inventory items are 100% protected</b> from loss! (You will only risk coins).`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     return ctx.reply(`ℹ️ ${item.emoji} <b>${item.name}</b> cannot be used directly. Check <code>/craft</code> or <code>/shop</code>!`, { parse_mode: 'HTML' });

@@ -55,6 +55,51 @@ export function sanitizeHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
+export function parseBet(input, wallet) {
+  if (!input) return { valid: false, error: 'NO_INPUT', bet: 0 };
+  const str = String(input).trim().toLowerCase();
+  const currentWallet = Number(wallet || 0);
+
+  if (str === 'all' || str === 'max') {
+    if (currentWallet <= 0) {
+      return { valid: false, error: 'NO_COINS', bet: 0 };
+    }
+    return { valid: true, bet: currentWallet };
+  }
+
+  if (str === 'half') {
+    const half = Math.floor(currentWallet / 2);
+    if (half <= 0) {
+      return { valid: false, error: 'NO_COINS', bet: 0 };
+    }
+    return { valid: true, bet: half };
+  }
+
+  let num = NaN;
+  if (str.endsWith('k')) {
+    num = parseFloat(str.slice(0, -1)) * 1000;
+  } else if (str.endsWith('m')) {
+    num = parseFloat(str.slice(0, -1)) * 1000000;
+  } else if (str.endsWith('b')) {
+    num = parseFloat(str.slice(0, -1)) * 1000000000;
+  } else if (str.endsWith('t')) {
+    num = parseFloat(str.slice(0, -1)) * 1000000000000;
+  } else {
+    num = parseInt(str.replace(/[,_]/g, ''), 10);
+  }
+
+  if (isNaN(num) || num <= 0) {
+    return { valid: false, error: 'INVALID_NUMBER', bet: 0 };
+  }
+
+  const bet = Math.floor(num);
+  if (bet > currentWallet) {
+    return { valid: false, error: 'INSUFFICIENT_FUNDS', bet };
+  }
+
+  return { valid: true, bet };
+}
+
 export default {
   formatCoins,
   formatNumber,
@@ -62,5 +107,7 @@ export default {
   formatTime,
   randomBetween,
   pickRandom,
-  sanitizeHtml
+  sanitizeHtml,
+  parseBet
 };
+

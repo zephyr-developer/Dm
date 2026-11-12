@@ -1,27 +1,26 @@
 import userRepo from '../../database/userRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
-import { formatCoins, pickRandom } from '../../utils/formatters.js';
+import { formatCoins, parseBet, pickRandom } from '../../utils/formatters.js';
 
 const SLOT_SYMBOLS = ['🍒', '🍋', '🍇', '🔔', '💎', '🐸'];
 
 export const slots = {
   name: 'slots',
   aliases: [],
-  description: 'Spin the reels on the TeleMemer slot machine for up to 25x Pepe Jackpot',
+  description: 'Spin the reels on the TeleMemer slot machine for up to 25x Pepe Jackpot (No Bet Limits)',
   cooldown: 10, // 5s for Premium
 
   async execute(ctx) {
     const userId = ctx.from.id;
     const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const args = ctx.message.text.trim().split(/\s+/).slice(1);
-    const betInput = args[0]?.toLowerCase();
+    const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
 
-    if (!betInput) {
+    if (!betStr) {
       return ctx.reply(
         `🎰 <b>TeleMemer Casino Slots</b>\n` +
-        `Usage: <code>/slots &lt;bet&gt;</code> or <code>/slots max</code> (Max: 🪙 50,000)\n\n` +
+        `Usage: <code>/slots &lt;bet|half|all&gt;</code> (Supports shorthand: 50k, 10m, 5b)\n\n` +
         `<b>Payout Multipliers:</b>\n` +
         `• 🐸 🐸 🐸 = <b>25x JACKPOT!</b>\n` +
         `• 💎 💎 💎 = <b>10x Mega Win</b>\n` +
@@ -32,25 +31,16 @@ export const slots = {
       );
     }
 
-    let bet = 0;
-    if (betInput === 'all' || betInput === 'max') {
-      bet = Math.min(50000, user.wallet);
-    } else {
-      const parsed = parseInt(betInput.replace(/[,kKmM]/g, ''), 10);
-      if (isNaN(parsed) || parsed <= 0) {
-        return ctx.reply('❌ Please enter a valid positive number for your bet.');
+    const { valid, error, bet } = parseBet(betStr, user.wallet);
+    if (!valid) {
+      if (error === 'INSUFFICIENT_FUNDS' || error === 'NO_COINS') {
+        return ctx.reply(`❌ You don't have enough coins in your wallet! You only have 🪙 ${Number(user.wallet || 0).toLocaleString()}.`);
       }
-      bet = parsed;
+      return ctx.reply('❌ Please enter a valid positive number for your bet.');
     }
 
-    if (bet < 100) {
-      return ctx.reply('❌ Minimum slot bet is 🪙 100.');
-    }
-    if (bet > 50000) {
-      return ctx.reply('❌ Maximum slot bet is 🪙 50,000.');
-    }
-    if (user.wallet < bet) {
-      return ctx.reply(`💸 You don't have enough coins in your wallet! (Wallet: ${formatCoins(user.wallet)})`);
+    if (bet <= 0) {
+      return ctx.reply('❌ Bet must be at least 🪙 1.');
     }
 
     // Deduct bet immediately with currency log

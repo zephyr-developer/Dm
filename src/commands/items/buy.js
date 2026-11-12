@@ -1,56 +1,58 @@
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { findItem } from '../../config/items.js';
-import { formatCoins } from '../../utils/formatters.js';
+import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
 
 export const buy = {
   name: 'buy',
   aliases: [],
-  description: 'Purchase an item from the shop by name or ID',
+  description: 'Purchase items from the shop without limits or using all/max',
   cooldown: 3,
 
   async execute(ctx) {
     const userId = ctx.from.id;
     const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const args = ctx.message.text.trim().split(/\s+/).slice(1);
-    if (args.length === 0) {
+    const rawInput = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1).join(' ').trim();
+    if (!rawInput) {
       return ctx.reply(
         `🛒 <b>Shop Purchase</b>\n` +
-        `Usage: <code>/buy &lt;item_name&gt; [quantity]</code>\n` +
-        `Example: <code>/buy shovel</code> or <code>/buy padlock 3</code>\n\n` +
-        `View available items with <code>/shop</code>!`,
+        `Usage: <code>/buy &lt;item&gt; [quantity|all|max]</code>\n` +
+        `Examples: <code>/buy shovel</code>, <code>/buy banknote 500</code>, <code>/buy padlock max</code>\n\n` +
+        `View available items in the catalog with <code>/shop</code>!`,
         { parse_mode: 'HTML' }
       );
     }
 
-    // Check if the last argument is a quantity number
-    let quantity = 1;
-    let itemQuery = args.join(' ');
+    const words = rawInput.split(/\s+/);
+    let quantityStr = null;
+    let itemQuery = '';
 
-    const lastArg = args[args.length - 1];
-    if (/^\d+$/.test(lastArg) && args.length > 1) {
-      quantity = parseInt(lastArg, 10);
-      itemQuery = args.slice(0, -1).join(' ');
-    }
+    const lastWord = words[words.length - 1].toLowerCase();
+    const firstWord = words[0].toLowerCase();
 
-    if (quantity <= 0) {
-      return ctx.reply('❌ Quantity must be at least 1.');
-    }
-    if (quantity > 100) {
-      return ctx.reply('❌ Maximum purchase limit is 100 items per order.');
+    // Check if the last word is a quantity ('all', 'max', or a number)
+    if (words.length > 1 && (/^\d+$/.test(lastWord) || lastWord === 'all' || lastWord === 'max')) {
+      quantityStr = lastWord;
+      itemQuery = words.slice(0, -1).join(' ');
+    // Or if the first word is a quantity (e.g. /buy 100 banknote)
+    } else if (words.length > 1 && (/^\d+$/.test(firstWord) || firstWord === 'all' || firstWord === 'max')) {
+      quantityStr = firstWord;
+      itemQuery = words.slice(1).join(' ');
+    } else {
+      itemQuery = words.join(' ');
     }
 
     const item = findItem(itemQuery);
     if (!item) {
       return ctx.reply(
-        `❌ Could not find an item matching "<b>${itemQuery}</b>".\n` +
+        `❌ Could not find an item matching "<b>${sanitizeHtml(itemQuery)}</b>".\n` +
         `Run <code>/shop</code> to see valid items.`,
         { parse_mode: 'HTML' }
       );
     }
 
-    if (item.buyPrice === null) {
+    if (item.buyPrice === null || item.buyPrice <= 0) {
       return ctx.reply(
         `🚫 ${item.emoji} <b>${item.name}</b> is not sold in the regular store!\n` +
         `You can find it by grinding, crafting (<code>/craft</code>), or hunting/fishing.`,
@@ -58,29 +60,50 @@ export const buy = {
       );
     }
 
+    const currentWallet = Number(user.wallet || 0);
+    let quantity = 1;
+
+    // Handle "all" or "max": calculate maximum affordable quantity
+    if (quantityStr === 'all' || quantityStr === 'max') {
+      quantity = Math.floor(currentWallet / item.buyPrice);
+      if (quantity <= 0) {
+        return ctx.reply(
+          `💸 <b>Insufficient Funds!</b>\n` +
+          `You cannot afford even 1x ${item.emoji} <b>${item.name}</b>.\n` +
+          `Price: <b>${formatCoins(item.buyPrice)}</b> | Your Wallet: <b>${formatCoins(currentWallet)}</b>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    } else if (quantityStr) {
+      const parsed = parseInt(quantityStr, 10);
+      if (isNaN(parsed) || parsed <= 0) {
+        return ctx.reply('❌ Quantity must be at least 1.');
+      }
+      quantity = parsed;
+    }
+
     const totalCost = item.buyPrice * quantity;
-    if (Number(user.wallet || 0) < totalCost) {
+    if (currentWallet < totalCost) {
       return ctx.reply(
         `💸 <b>Insufficient Funds!</b>\n` +
-        `To buy <b>${quantity}x ${item.emoji} ${item.name}</b>, you need <b>${formatCoins(totalCost)}</b>.\n` +
-        `👛 Your wallet balance: <b>${formatCoins(user.wallet)}</b>`,
+        `To buy <b>${quantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}</b>, you need <b>${formatCoins(totalCost)}</b>.\n` +
+        `👛 Your wallet balance: <b>${formatCoins(currentWallet)}</b>`,
         { parse_mode: 'HTML' }
       );
     }
 
-    // Deduct coins & add items
+    // Deduct coins & add items to inventory without any artificial caps
     const updated = await userRepo.updateCoins(userId, {
       walletDelta: -totalCost,
       sourceCommand: '/buy',
-      details: `Bought ${quantity}x ${item.name} (${item.emoji})`
+      details: `Bought ${quantity}x ${item.name}`
     });
     await inventoryRepo.addItem(userId, item.id, quantity);
     const newQuantity = await inventoryRepo.getItem(userId, item.id);
 
     return ctx.reply(
-      `✅ <b>Purchase Complete!</b>\n` +
-      `Bought <b>${quantity}x ${item.emoji} ${item.name}</b> for <b>${formatCoins(totalCost)}</b>.\n\n` +
-      `🎒 <b>Now in Backpack:</b> ${newQuantity}x ${item.name}\n` +
+      `🛒 You bought <b>${quantity.toLocaleString('en-US')}x ${item.name}</b> for <b>🪙 ${totalCost.toLocaleString('en-US')}</b>!\n\n` +
+      `🎒 <b>Now in Backpack:</b> ${newQuantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}\n` +
       `👛 <b>Remaining Wallet:</b> ${formatCoins(updated.wallet)}`,
       { parse_mode: 'HTML' }
     );
