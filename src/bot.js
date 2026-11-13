@@ -3,11 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import dotenv from 'dotenv';
+import dedupUpdates from './middlewares/dedupUpdates.js';
 import registerUser from './middlewares/registerUser.js';
 import heistGuard from './middlewares/heistGuard.js';
 import cooldownRepo from './database/cooldownRepo.js';
 import userRepo from './database/userRepo.js';
-import { isOwner, ownerGuard } from './middlewares/ownerGuard.js';
+import { isOwner } from './middlewares/ownerGuard.js';
 import { formatTime } from './utils/formatters.js';
 
 dotenv.config();
@@ -22,7 +23,13 @@ export const bot = new Bot(token);
 export const commands = new Map();
 export const callbackHandlers = new Map();
 
-// 1. Global Middlewares
+// Singleton locks to guarantee handlers are never attached more than once
+let isLoaded = false;
+let loadingPromise = null;
+let defaultCommandsRegistered = false;
+
+// 1. Global Middlewares (Dedup MUST be first)
+bot.use(dedupUpdates);
 bot.use(registerUser);
 bot.use(heistGuard);
 
@@ -78,96 +85,142 @@ export function checkButtonOwnership(ctx) {
   return true;
 }
 
-// 2. Dynamic Command & Callback Loader
+// 2. Dynamic Command & Callback Loader (Idempotent / Single-Execution)
 export async function loadCommands() {
-  const commandsDir = path.resolve(__dirname, 'commands');
+  if (isLoaded) return;
+  if (loadingPromise) return loadingPromise;
 
-  if (!fs.existsSync(commandsDir)) {
-    console.log('[TeleMemer] Creating commands directory...');
-    fs.mkdirSync(commandsDir, { recursive: true });
-    return;
-  }
+  loadingPromise = (async () => {
+    const commandsDir = path.resolve(__dirname, 'commands');
 
-  const categories = fs.readdirSync(commandsDir, { withFileTypes: true })
-    .filter(dirent => dirent.isDirectory())
-    .map(dirent => dirent.name);
+    if (!fs.existsSync(commandsDir)) {
+      console.log('[TeleMemer] Creating commands directory...');
+      fs.mkdirSync(commandsDir, { recursive: true });
+      isLoaded = true;
+      return;
+    }
 
-  console.log(`[TeleMemer] Scanning ${categories.length} command categories...`);
+    const categories = fs.readdirSync(commandsDir, { withFileTypes: true })
+      .filter(dirent => dirent.isDirectory())
+      .map(dirent => dirent.name);
 
-  for (const category of categories) {
-    const categoryPath = path.join(commandsDir, category);
-    const files = fs.readdirSync(categoryPath).filter(f => f.endsWith('.js'));
+    console.log(`[TeleMemer] Scanning ${categories.length} command categories...`);
 
-    for (const file of files) {
-      try {
-        const filePath = path.join(categoryPath, file);
-        const fileUrl = pathToFileURL(filePath).href;
-        const commandModule = await import(fileUrl);
-        const command = commandModule.default || commandModule;
+    const registeredTriggers = new Set();
 
-        if (!command || !command.name || typeof command.execute !== 'function') {
-          console.warn(`[TeleMemer] Skipping invalid command module: ${category}/${file}`);
-          continue;
-        }
+    for (const category of categories) {
+      const categoryPath = path.join(commandsDir, category);
+      const files = fs.readdirSync(categoryPath).filter(f => f.endsWith('.js'));
 
-        command.category = category;
-        commands.set(command.name, command);
+      for (const file of files) {
+        try {
+          const filePath = path.join(categoryPath, file);
+          const fileUrl = pathToFileURL(filePath).href;
+          const commandModule = await import(fileUrl);
+          const command = commandModule.default || commandModule;
 
-        const triggers = [command.name, ...(command.aliases || [])];
-
-        bot.command(triggers, async (ctx) => {
-          const userId = ctx.from?.id;
-
-          // 1. If this is an Underground Owner command, verify authorization first
-          if (category === 'owner') {
-            if (!isOwner(ctx)) {
-              return ctx.reply('❌ Unknown command. Type /help to see all available commands.');
-            }
+          if (!command || !command.name || typeof command.execute !== 'function') {
+            console.warn(`[TeleMemer] Skipping invalid command module: ${category}/${file}`);
+            continue;
           }
 
-          // 2. Cooldown check (Owner @tzhunyuan MUST STILL OBEY COOLDOWNS!)
-          if (userId && command.cooldown && command.cooldown > 0) {
-            const { onCooldown, remainingSeconds } = await cooldownRepo.checkCooldown(userId, command.name);
-            if (onCooldown) {
-              const isPrem = await userRepo.isPremium(userId);
-              let cdMsg = `⏳ <b>Slow down!</b> Wait <b>${formatTime(remainingSeconds)}</b> before using <code>/${command.name}</code> again.`;
-              if (!isPrem) {
-                const premWait = Math.max(3, Math.floor(command.cooldown * 0.5));
-                cdMsg += `\n💎 <i>Tip: Premium users only wait ${formatTime(premWait)}!</i>`;
+          if (commands.has(command.name)) {
+            console.warn(`[TeleMemer] Skipping duplicate command name: /${command.name} (${category}/${file})`);
+            continue;
+          }
+
+          command.category = category;
+          commands.set(command.name, command);
+
+          // Deduplicated trigger list across command + global registry
+          const uniqueTriggers = [...new Set([command.name, ...(command.aliases || [])].filter(Boolean))]
+            .filter(trigger => !registeredTriggers.has(trigger));
+
+          if (uniqueTriggers.length === 0) {
+            continue;
+          }
+          uniqueTriggers.forEach(t => registeredTriggers.add(t));
+
+          bot.command(uniqueTriggers, async (ctx) => {
+            const userId = ctx.from?.id;
+
+            // 1. If this is an Underground Owner command, verify authorization first
+            if (category === 'owner') {
+              if (!isOwner(ctx)) {
+                return ctx.reply('❌ Unknown command. Type /help to see all available commands.');
               }
-              return ctx.reply(cdMsg, { parse_mode: 'HTML' });
             }
-          }
 
-          try {
-            await command.execute(ctx);
-            // Apply effective cooldown (50% reduction for Premium)
+            // 2. Cooldown check (Owner @tzhunyuan MUST STILL OBEY COOLDOWNS!)
             if (userId && command.cooldown && command.cooldown > 0) {
-              await cooldownRepo.applyEffectiveCooldown(userId, command.name, command.cooldown);
+              const { onCooldown, remainingSeconds } = await cooldownRepo.checkCooldown(userId, command.name);
+              if (onCooldown) {
+                const isPrem = await userRepo.isPremium(userId);
+                let cdMsg = `⏳ <b>Slow down!</b> Wait <b>${formatTime(remainingSeconds)}</b> before using <code>/${command.name}</code> again.`;
+                if (!isPrem) {
+                  const premWait = Math.max(3, Math.floor(command.cooldown * 0.5));
+                  cdMsg += `\n💎 <i>Tip: Premium users only wait ${formatTime(premWait)}!</i>`;
+                }
+                return ctx.reply(cdMsg, { parse_mode: 'HTML' });
+              }
             }
-          } catch (execErr) {
-            console.error(`[TeleMemer] Error executing /${command.name}:`, execErr.message);
-            await ctx.reply(`⚠️ An error occurred while executing /${command.name}. Please try again later.`).catch(() => {});
+
+            // 3. Guard against double replies (command calling ctx.reply AND returning a string)
+            let hasReplied = false;
+            const origReply = ctx.reply.bind(ctx);
+            ctx.reply = async (...args) => {
+              hasReplied = true;
+              return origReply(...args);
+            };
+
+            try {
+              const result = await command.execute(ctx);
+              if (typeof result === 'string' && !hasReplied) {
+                await ctx.reply(result, { parse_mode: 'HTML' });
+              }
+              // Apply effective cooldown (50% reduction for Premium)
+              if (userId && command.cooldown && command.cooldown > 0) {
+                await cooldownRepo.applyEffectiveCooldown(userId, command.name, command.cooldown);
+              }
+            } catch (execErr) {
+              console.error(`[TeleMemer] Error executing /${command.name}:`, execErr.message);
+              if (!hasReplied) {
+                await origReply(`⚠️ An error occurred while executing /${command.name}. Please try again later.`).catch(() => {});
+              }
+            } finally {
+              ctx.reply = origReply;
+            }
+          });
+
+          // Register callback query handler if exported
+          if (typeof command.handleCallback === 'function') {
+            callbackHandlers.set(command.name, command.handleCallback);
           }
-        });
 
-        // Register callback query handler if exported
-        if (typeof command.handleCallback === 'function') {
-          callbackHandlers.set(command.name, command.handleCallback);
+          console.log(`[TeleMemer] Loaded /${command.name} [${category}] (aliases: ${command.aliases?.join(', ') || 'none'})`);
+        } catch (loadErr) {
+          console.error(`[TeleMemer] Failed to load command ${category}/${file}:`, loadErr);
         }
-
-        console.log(`[TeleMemer] Loaded /${command.name} [${category}] (aliases: ${command.aliases?.join(', ') || 'none'})`);
-      } catch (loadErr) {
-        console.error(`[TeleMemer] Failed to load command ${category}/${file}:`, loadErr);
       }
     }
-  }
 
-  // Built-in /start & /help
-  registerDefaultCommands();
+    // Built-in /start & /help & global callback dispatcher
+    registerDefaultCommands();
+    isLoaded = true;
+  })();
+
+  try {
+    await loadingPromise;
+  } catch (err) {
+    loadingPromise = null;
+    throw err;
+  }
 }
 
 function registerDefaultCommands() {
+  if (defaultCommandsRegistered) return;
+  defaultCommandsRegistered = true;
+
   bot.command(['start', 'help'], async (ctx) => {
     let helpMsg = `🐸 <b>Welcome to TeleMemer!</b>\n` +
       `The definitive RPG & Economy bot for Telegram groups, inspired by Dank Memer.\n\n` +
@@ -205,7 +258,7 @@ function registerDefaultCommands() {
       }
     }
 
-    await ctx.reply(helpMsg, { parse_mode: 'HTML' });
+    return ctx.reply(helpMsg, { parse_mode: 'HTML' });
   });
 
   // Global callback_query dispatcher with button ownership lock

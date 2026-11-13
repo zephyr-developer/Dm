@@ -86,7 +86,7 @@ export const profile = {
 
     const { text, keyboard } = await buildProfileCard(targetUserId, callerId);
 
-    await ctx.reply(text, {
+    return ctx.reply(text, {
       parse_mode: 'HTML',
       reply_markup: keyboard || undefined
     });

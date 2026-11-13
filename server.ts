@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import dotenv from 'dotenv';
+import { webhookCallback } from 'grammy';
 import db, { initDatabase, isPostgresConfigured } from './src/database/db.js';
 import { bot, loadCommands } from './src/bot.js';
 import { getAllItems } from './src/config/items.js';
@@ -16,6 +17,21 @@ const isProduction = process.env.NODE_ENV === 'production';
 const PORT = isProduction ? (Number(process.env.PORT) || 3000) : 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const KEEP_ALIVE_URL = process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL;
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
+
+// Track active bot transport mode to prevent Polling + Webhook collision
+let isPolling = false;
+let isWebhookActive = false;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function hasLiveBotToken(): boolean {
+  return Boolean(
+    BOT_TOKEN &&
+      !BOT_TOKEN.includes('1234567890') &&
+      !BOT_TOKEN.includes('DUMMY') &&
+      !BOT_TOKEN.includes('your_telegram_bot_token')
+  );
+}
 
 // ====================================================================
 // 1. GLOBAL PROCESS CRASH GUARDS (24/7 Crash-Proofing)
@@ -28,36 +44,77 @@ process.on('uncaughtException', (err) => {
   console.error('[TeleMemer Crash Guard] Uncaught Exception:', err);
 });
 
-function startTelegramBotWithReconnect() {
-  if (
-    BOT_TOKEN &&
-    !BOT_TOKEN.includes('1234567890') &&
-    !BOT_TOKEN.includes('DUMMY') &&
-    !BOT_TOKEN.includes('your_telegram_bot_token')
-  ) {
-    console.log('🤖 Connecting to Telegram Bot API with drop_pending_updates: true...');
+async function stopPollingIfRunning() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (isPolling) {
+    isPolling = false;
+    if (bot.isInited()) {
+      await bot.stop().catch(() => {});
+    }
+  }
+}
 
-    const launch = () => {
-      bot
-        .start({
-          drop_pending_updates: true,
-          allowed_updates: ['message', 'callback_query'],
-          onStart: (botInfo) => {
-            console.log(`🎉 TeleMemer Bot is LIVE! Username: @${botInfo.username} (ID: ${botInfo.id})`);
-          },
-        })
-        .catch((botErr) => {
-          console.error('⚠️ Telegram connection dropped:', botErr.message);
-          console.log('🔄 Reconnecting in 5 seconds...');
-          setTimeout(launch, 5000);
-        });
-    };
-
-    launch();
-  } else {
+async function startTelegramBotWithReconnect() {
+  if (!hasLiveBotToken()) {
     console.log('ℹ️ No live Telegram BOT_TOKEN detected in environment.');
     console.log('👉 Set BOT_TOKEN in your environment variables to connect to Telegram.');
+    return;
   }
+
+  // Never start Long Polling if Webhook mode is active or explicitly configured
+  if (isWebhookActive || WEBHOOK_URL) {
+    if (WEBHOOK_URL) {
+      await stopPollingIfRunning();
+      const targetUrl = WEBHOOK_URL.endsWith('/api/webhook')
+        ? WEBHOOK_URL
+        : `${WEBHOOK_URL.replace(/\/+$/, '')}/api/webhook`;
+      try {
+        await bot.api.setWebhook(targetUrl, {
+          drop_pending_updates: true,
+          allowed_updates: ['message', 'callback_query'],
+        });
+        isWebhookActive = true;
+        console.log(`🔗 Telegram Webhook mode active: ${targetUrl}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('⚠️ Failed to configure WEBHOOK_URL:', message);
+      }
+    }
+    return;
+  }
+
+  if (isPolling) return;
+
+  console.log('🤖 Connecting to Telegram Bot API (Long Polling) with drop_pending_updates: true...');
+
+  // Ensure no stale Telegram webhook is active alongside polling
+  await bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+
+  const launch = () => {
+    if (isWebhookActive || isPolling) return;
+    isPolling = true;
+
+    bot
+      .start({
+        drop_pending_updates: true,
+        allowed_updates: ['message', 'callback_query'],
+        onStart: (botInfo) => {
+          console.log(`🎉 TeleMemer Bot is LIVE! Username: @${botInfo.username} (ID: ${botInfo.id})`);
+        },
+      })
+      .catch((botErr) => {
+        isPolling = false;
+        if (isWebhookActive) return;
+        console.error('⚠️ Telegram connection dropped:', botErr.message);
+        console.log('🔄 Reconnecting in 5 seconds...');
+        reconnectTimer = setTimeout(launch, 5000);
+      });
+  };
+
+  launch();
 }
 
 async function startServer() {
@@ -67,6 +124,9 @@ async function startServer() {
 
   const app = express();
   app.use(express.json());
+
+  // Lazy-created grammY Express webhook handler
+  const handleTelegramWebhook = webhookCallback(bot, 'express');
 
   // Health & API endpoints
   const handleHealth = async (_req: express.Request, res: express.Response) => {
@@ -96,7 +156,8 @@ async function startServer() {
         status: 'online',
         app: 'TeleMemer',
         uptime: process.uptime(),
-        botConnected: Boolean(BOT_TOKEN && !BOT_TOKEN.includes('1234567890') && !BOT_TOKEN.includes('DUMMY')),
+        botConnected: hasLiveBotToken(),
+        mode: isWebhookActive ? 'webhook' : isPolling ? 'polling' : 'idle',
         database: isPostgresConfigured ? 'PostgreSQL (Persistent)' : 'In-Memory Dev Mode',
         stats: {
           registeredUsers: userCount,
@@ -122,6 +183,62 @@ async function startServer() {
 
   app.get('/api/jobs', (_req, res) => {
     res.json(getAllJobs());
+  });
+
+  // Setup Webhook endpoint: stops polling first to guarantee no double responses
+  const handleSetupWebhook = async (req: express.Request, res: express.Response) => {
+    try {
+      if (!hasLiveBotToken()) {
+        return res.status(400).json({ ok: false, error: 'Live BOT_TOKEN not configured.' });
+      }
+
+      await loadCommands();
+      await stopPollingIfRunning();
+
+      const rawUrl =
+        (typeof req.body?.url === 'string' && req.body.url) ||
+        (typeof req.query?.url === 'string' && req.query.url) ||
+        WEBHOOK_URL ||
+        (req.headers.host ? `https://${req.headers.host}` : '');
+
+      if (!rawUrl) {
+        return res.status(400).json({ ok: false, error: 'Missing webhook url parameter or WEBHOOK_URL env var.' });
+      }
+
+      const webhookUrl = rawUrl.endsWith('/api/webhook')
+        ? rawUrl
+        : `${rawUrl.replace(/\/+$/, '')}/api/webhook`;
+
+      await bot.api.setWebhook(webhookUrl, {
+        drop_pending_updates: true,
+        allowed_updates: ['message', 'callback_query'],
+      });
+      isWebhookActive = true;
+
+      return res.json({ ok: true, mode: 'webhook', webhookUrl });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ ok: false, error: message });
+    }
+  };
+
+  app.post('/api/setup-webhook', handleSetupWebhook);
+  app.get('/api/setup-webhook', handleSetupWebhook);
+
+  // Telegram Webhook receiver: always acknowledge cleanly so Telegram never retries duplicates
+  app.post('/api/webhook', async (req, res) => {
+    try {
+      if (!bot.isInited()) {
+        await bot.init();
+      }
+      await loadCommands();
+      await handleTelegramWebhook(req, res);
+    } catch (err) {
+      console.error('[TeleMemer Webhook Error]:', err);
+      if (!res.headersSent) {
+        res.status(200).json({ ok: true });
+      }
+    }
   });
 
   // Frontend middleware (Vite in dev, static dist in production)
@@ -186,23 +303,19 @@ async function startServer() {
     console.error('❌ Error during command loading:', loaderErr);
   }
 
-  startTelegramBotWithReconnect();
+  await startTelegramBotWithReconnect();
 
   // Graceful shutdown
   const shutdown = () => {
     console.log('🛑 Shutting down TeleMemer gracefully...');
-    server.close(() => {
-      bot
-        .stop()
-        .then(async () => {
-          const pgPool = db.pool as { end?: () => Promise<void> } | null;
-          if (pgPool && typeof pgPool.end === 'function') {
-            await pgPool.end().catch(() => {});
-          }
-          console.log('👋 Database and bot connections closed safely.');
-          process.exit(0);
-        })
-        .catch(() => process.exit(0));
+    server.close(async () => {
+      await stopPollingIfRunning();
+      const pgPool = db.pool as { end?: () => Promise<void> } | null;
+      if (pgPool && typeof pgPool.end === 'function') {
+        await pgPool.end().catch(() => {});
+      }
+      console.log('👋 Database and bot connections closed safely.');
+      process.exit(0);
     });
   };
 

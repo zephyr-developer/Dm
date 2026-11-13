@@ -146,7 +146,7 @@ async function bootstrap() {
   }
 
   // 5. Connect Telegram Bot with Auto-Reconnect & Drop Pending Updates
-  startTelegramBotWithReconnect();
+  await startTelegramBotWithReconnect();
 
   // Graceful shutdown
   const shutdown = () => {
@@ -164,9 +164,11 @@ async function bootstrap() {
   process.on('SIGTERM', shutdown);
 }
 
-function startTelegramBotWithReconnect() {
+async function startTelegramBotWithReconnect() {
   if (BOT_TOKEN && !BOT_TOKEN.includes('1234567890') && !BOT_TOKEN.includes('DUMMY') && !BOT_TOKEN.includes('your_telegram_bot_token')) {
     console.log('🤖 Connecting to Telegram Bot API with drop_pending_updates: true...');
+
+    await bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
 
     const launch = () => {
       bot.start({

@@ -113,7 +113,7 @@ export const inventory = {
 
     const { text, keyboard } = await buildInventoryCard(targetUser, 1, callerId);
 
-    await ctx.reply(text, {
+    return ctx.reply(text, {
       parse_mode: 'HTML',
       reply_markup: keyboard || undefined
     });

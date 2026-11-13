@@ -98,7 +98,7 @@ export const balance = {
 
     const { text, keyboard } = await buildBalanceCard(targetUser, callerId, isOwner(ctx));
 
-    await ctx.reply(text, {
+    return ctx.reply(text, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
