@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,10 +20,22 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const KEEP_ALIVE_URL = process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
+const INSTANCE_ID = crypto.randomUUID();
+const POLLING_LEASE_KEY = 'bot_polling_lease';
+const LEASE_TTL_MS = 20_000;
+const LEASE_RENEW_MS = 8_000;
+const STANDBY_CHECK_MS = 10_000;
+
 // Track active bot transport mode to prevent Polling + Webhook collision
 let isPolling = false;
+let isStandby = false;
 let isWebhookActive = false;
+let isShuttingDown = false;
+let conflictRetries = 0;
+let lastConflictWarnAt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
+let stableResetTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedWebhookMiddleware: express.RequestHandler | null = null;
 
 function hasLiveBotToken(): boolean {
@@ -45,16 +58,75 @@ process.on('uncaughtException', (err) => {
   console.error('[TeleMemer Crash Guard] Uncaught Exception:', err);
 });
 
-async function stopPollingIfRunning() {
+function isConflictError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const anyErr = err as { error_code?: number; message?: string; description?: string };
+  if (anyErr.error_code === 409) return true;
+  const text = `${anyErr.message || ''} ${anyErr.description || ''}`.toLowerCase();
+  return text.includes('409') || text.includes('conflict');
+}
+
+async function acquireOrRenewPollingLease(): Promise<boolean> {
+  if (!isPostgresConfigured) return true;
+  const now = Date.now();
+  const expiresAt = now + LEASE_TTL_MS;
+  const payload = JSON.stringify({ instanceId: INSTANCE_ID, expiresAt });
+
+  try {
+    const res = await db.query(
+      `INSERT INTO settings (key, value)
+       VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+       WHERE NOT (settings.value LIKE '{%')
+          OR (settings.value::jsonb->>'instanceId') = $3
+          OR COALESCE((settings.value::jsonb->>'expiresAt')::bigint, 0) < $4
+       RETURNING value;`,
+      [POLLING_LEASE_KEY, payload, INSTANCE_ID, now]
+    );
+    return res.rows.length > 0;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('⚠️ Polling lease check failed, failing open:', message);
+    return true;
+  }
+}
+
+async function releasePollingLease(): Promise<void> {
+  if (!isPostgresConfigured) return;
+  try {
+    await db.query(
+      `DELETE FROM settings
+       WHERE key = $1
+         AND settings.value LIKE '{%'
+         AND (settings.value::jsonb->>'instanceId') = $2;`,
+      [POLLING_LEASE_KEY, INSTANCE_ID]
+    );
+  } catch {
+    // Best-effort lease release on shutdown/conflict
+  }
+}
+
+function clearPollingTimers() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  if (isPolling) {
+  if (leaseRenewTimer) {
+    clearInterval(leaseRenewTimer);
+    leaseRenewTimer = null;
+  }
+  if (stableResetTimer) {
+    clearTimeout(stableResetTimer);
+    stableResetTimer = null;
+  }
+}
+
+async function stopPollingIfRunning() {
+  clearPollingTimers();
+  isStandby = false;
+  if (isPolling || bot.isRunning()) {
     isPolling = false;
-    if (bot.isInited()) {
-      await bot.stop().catch(() => {});
-    }
+    await bot.stop().catch(() => {});
   }
 }
 
@@ -78,6 +150,7 @@ async function startTelegramBotWithReconnect() {
   if (isWebhookActive || WEBHOOK_URL) {
     if (WEBHOOK_URL) {
       await stopPollingIfRunning();
+      await releasePollingLease();
       const targetUrl = WEBHOOK_URL.endsWith('/api/webhook')
         ? WEBHOOK_URL
         : `${WEBHOOK_URL.replace(/\/+$/, '')}/api/webhook`;
@@ -96,16 +169,44 @@ async function startTelegramBotWithReconnect() {
     return;
   }
 
-  if (isPolling) return;
+  if (isPolling || isShuttingDown) return;
 
-  console.log('🤖 Connecting to Telegram Bot API (Long Polling) with drop_pending_updates: true...');
+  const scheduleReconnect = (delayMs: number) => {
+    if (reconnectTimer || isShuttingDown || isWebhookActive) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void launch();
+    }, delayMs);
+  };
 
-  // Ensure no stale Telegram webhook is active alongside polling
-  await bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+  const launch = async () => {
+    if (isWebhookActive || isPolling || isShuttingDown) return;
 
-  const launch = () => {
-    if (isWebhookActive || isPolling) return;
+    const hasLease = await acquireOrRenewPollingLease();
+    if (!hasLease) {
+      if (!isStandby) {
+        console.log('🛡️ Another TeleMemer instance holds the active polling lease. Standing by...');
+      }
+      isStandby = true;
+      scheduleReconnect(STANDBY_CHECK_MS);
+      return;
+    }
+
+    isStandby = false;
     isPolling = true;
+    console.log('🤖 Connecting to Telegram Bot API (Long Polling) with drop_pending_updates: true...');
+
+    if (leaseRenewTimer) clearInterval(leaseRenewTimer);
+    leaseRenewTimer = setInterval(async () => {
+      if (!isPolling || isShuttingDown || isWebhookActive) return;
+      const renewed = await acquireOrRenewPollingLease();
+      if (!renewed) {
+        console.warn('🛡️ Lost polling lease to another instance; pausing local poller.');
+        await stopPollingIfRunning();
+        isStandby = true;
+        scheduleReconnect(STANDBY_CHECK_MS);
+      }
+    }, LEASE_RENEW_MS);
 
     try {
       bot
@@ -114,23 +215,50 @@ async function startTelegramBotWithReconnect() {
           allowed_updates: ['message', 'callback_query'],
           onStart: (botInfo) => {
             console.log(`🎉 TeleMemer Bot is LIVE! Username: @${botInfo.username} (ID: ${botInfo.id})`);
+            if (stableResetTimer) clearTimeout(stableResetTimer);
+            stableResetTimer = setTimeout(() => {
+              conflictRetries = 0;
+            }, 15_000);
           },
         })
-        .catch((botErr) => {
+        .catch(async (botErr) => {
+          const wasPolling = isPolling;
+          clearPollingTimers();
           isPolling = false;
-          if (isWebhookActive) return;
-          console.error('⚠️ Telegram connection dropped:', botErr.message);
+          if (isWebhookActive || isShuttingDown || !wasPolling) return;
+
+          if (isConflictError(botErr)) {
+            conflictRetries += 1;
+            await releasePollingLease();
+            const baseBackoff = Math.min(60_000, 10_000 * Math.pow(2, Math.min(conflictRetries - 1, 3)));
+            const jitter = Math.floor(Math.random() * 3000);
+            const delayMs = baseBackoff + jitter;
+            const now = Date.now();
+            if (now - lastConflictWarnAt > 30_000) {
+              lastConflictWarnAt = now;
+              console.warn(
+                `⚠️ Another bot instance is polling Telegram (409 Conflict). Backing off for ${Math.round(delayMs / 1000)}s...`
+              );
+            }
+            isStandby = true;
+            scheduleReconnect(delayMs);
+            return;
+          }
+
+          const msg = botErr instanceof Error ? botErr.message : String(botErr);
+          console.warn('⚠️ Telegram polling interrupted:', msg);
           console.log('🔄 Reconnecting in 5 seconds...');
-          reconnectTimer = setTimeout(launch, 5000);
+          scheduleReconnect(5000);
         });
     } catch (syncErr) {
+      clearPollingTimers();
       isPolling = false;
       const message = syncErr instanceof Error ? syncErr.message : String(syncErr);
-      console.error('⚠️ Failed to launch Telegram polling:', message);
+      console.warn('⚠️ Failed to launch Telegram polling:', message);
     }
   };
 
-  launch();
+  await launch();
 }
 
 async function startServer() {
@@ -170,7 +298,7 @@ async function startServer() {
         app: 'TeleMemer',
         uptime: process.uptime(),
         botConnected: hasLiveBotToken(),
-        mode: isWebhookActive ? 'webhook' : isPolling ? 'polling' : 'idle',
+        mode: isWebhookActive ? 'webhook' : isPolling ? 'polling' : isStandby ? 'standby' : 'idle',
         database: isPostgresConfigured ? 'PostgreSQL (Persistent)' : 'In-Memory Dev Mode',
         stats: {
           registeredUsers: userCount,
@@ -343,24 +471,25 @@ async function startServer() {
 
   await startTelegramBotWithReconnect();
 
-  // Graceful shutdown (close keep-alive sockets immediately so restarts never stall on EADDRINUSE)
-  let isShuttingDown = false;
-  const shutdown = () => {
+  // Graceful shutdown (stop polling & release lease FIRST so restarts never hit 409 Conflict)
+  const shutdown = async () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
     console.log('🛑 Shutting down TeleMemer gracefully...');
 
     const forceExitTimer = setTimeout(() => {
       process.exit(0);
-    }, 1500);
+    }, 3000);
     forceExitTimer.unref();
+
+    await stopPollingIfRunning();
+    await releasePollingLease();
 
     if (typeof server.closeAllConnections === 'function') {
       server.closeAllConnections();
     }
 
     server.close(async () => {
-      await stopPollingIfRunning();
       const pgPool = db.pool as { end?: () => Promise<void> } | null;
       if (pgPool && typeof pgPool.end === 'function') {
         await pgPool.end().catch(() => {});

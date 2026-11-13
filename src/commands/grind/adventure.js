@@ -284,6 +284,52 @@ export const ENCOUNTER_POOL = [
         disasterText: ''
       }
     ]
+  },
+  {
+    id: 'grand_court_hotel',
+    title: '⚖️ Grand Court Hotel Penthouse',
+    scenario: 'You slip past velvet ropes into the high-stakes Grand Court Hotel VIP Penthouse, where syndicate judges and billionaire whales gamble behind laser-rigged marble doors!',
+    choices: [
+      {
+        text: '🎰 Crack High-Roller Suite Vault',
+        successChance: 0.55,
+        disasterChance: 0.22,
+        minCoins: 25000,
+        maxCoins: 65000,
+        dropItem: 'pepecoin',
+        dropChance: 0.35,
+        successText: '💎 <b>GRAND HEIST SCORE!</b> You bypassed the biometric gavel lock on the penthouse vault and stuffed fistfuls of VIP casino chips into your bag!',
+        failText: '🚨 Silent motion sensors tripped! You dove down the laundry chute empty-handed before security swarmed the floor.',
+        disasterReason: 'eliminated by Grand Court Hotel penthouse tactical security',
+        disasterText: '🔫 Armed VIP tactical guards cornered you inside the vault alcove and opened fire!'
+      },
+      {
+        text: '⚖️ Bluff The Head Concierge',
+        successChance: 0.72,
+        disasterChance: 0.12,
+        minCoins: 15000,
+        maxCoins: 35000,
+        dropItem: 'banknote',
+        dropChance: 0.45,
+        successText: '🎩 <b>HIGH-SOCIETY CON!</b> Wearing a stolen tuxedo, you convinced the concierge to hand over a VIP bailout envelope!',
+        failText: '🤨 The concierge checked the guest ledger, spotted your fake name, and had bouncers toss you into the alley.',
+        disasterReason: 'thrown from the Grand Court Hotel 40th-floor balcony',
+        disasterText: '🪟 Two tuxedoed enforcers saw right through your bluff and hurled you off the penthouse balcony!'
+      },
+      {
+        text: '🍾 Raid VIP Champagne Lounge',
+        successChance: 0.88,
+        disasterChance: 0.03,
+        minCoins: 8000,
+        maxCoins: 18000,
+        dropItem: 'horseshoe',
+        dropChance: 0.35,
+        successText: '🥂 <b>LUXURY LOOT!</b> You pocketed golden tip trays and a lucky charm left behind at the private baccarat table.',
+        failText: '👀 A sharp-eyed sommelier shooed you out of the VIP lounge before you could grab anything.',
+        disasterReason: 'choking on poisoned vintage caviar at Grand Court Hotel',
+        disasterText: '☠️ You sampled an unmarked VIP platter meant for a rival mob boss and collapsed instantly!'
+      }
+    ]
   }
 ];
 
@@ -327,8 +373,9 @@ export const adventure = {
       return ctx.reply(
         `🎟️ <b>You need an Adventure Ticket to embark on an expedition!</b>\n\n` +
         `Adventure expeditions are 3-stage perilous journeys with massive rewards and rare collectible drops.\n\n` +
-        `🛠️ <b>How to craft an Adventure Ticket:</b>\n` +
-        `• Run <code>/craft adventureticket</code> (Requires 2x 🩹 Duct Tape & 5x 🗑️ Garbage)\n` +
+        `🛠️ <b>How to get an Adventure Ticket:</b>\n` +
+        `• Buy one in the shop: <code>/buy adventureticket</code> (🪙 25,000)\n` +
+        `• Or craft one: <code>/craft adventureticket</code> (2x 🩹 Duct Tape & 5x 🗑️ Garbage)\n` +
         `• Gather crafting materials using <code>/search</code> and <code>/dig</code>!`,
         { parse_mode: 'HTML' }
       );

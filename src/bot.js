@@ -87,6 +87,7 @@ export function checkButtonOwnership(ctx) {
     parts.includes('public') ||
     parts[0] === 'heist_join' ||
     parts[0] === 'coinbomb_claim' ||
+    parts[0] === 'coinbomb' ||
     (parts[0] === 'bankrob' && parts[1] === 'join')
   ) {
     return true;
@@ -292,7 +293,7 @@ function registerDefaultCommands() {
 
     const data = ctx.callbackQuery.data;
     const parts = data.split(':');
-    const commandKey = parts[0];
+    const commandKey = parts[0] === 'coinbomb' || parts[0] === 'coinbomb_claim' ? 'use' : parts[0];
 
     // Check if there is a handler registered for this prefix
     const handler = callbackHandlers.get(commandKey);

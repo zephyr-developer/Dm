@@ -4,7 +4,52 @@ import { addXp } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, parseBet } from '../../utils/formatters.js';
 
-const MULTIPLIER_POOL = [0, 0.5, 1, 1, 1.5, 2, 3, 5, 'SKULL'];
+const MAX_GAMBLE_BET = 100_000_000;
+const MAX_STANDARD_MULTIPLIER = 5;
+
+// Weighted casino probability table (Total = 100%, House Edge ~25.6%)
+const SCRATCH_WEIGHTS = [
+  { value: 0, weight: 45, label: '💨 0x' },
+  { value: 0.25, weight: 25, label: '🪙 0.25x' },
+  { value: 0.5, weight: 14, label: '💰 0.5x' },
+  { value: 1.0, weight: 8, label: '💵 1x' },
+  { value: 2.0, weight: 2, label: '💎 2x' },
+  { value: 5.0, weight: 0.5, label: '👑 5x' },
+  { value: 'SKULL', weight: 5.5, label: '💀 BUST' }
+];
+
+function rollWeightedTile(isGodLuck = false) {
+  if (isGodLuck) {
+    // @tzhunyuan with custom_luck >= 100: bomb-free high-roller board
+    const godPool = [1.0, 2.0, 5.0, 10.0];
+    return godPool[Math.floor(Math.random() * godPool.length)];
+  }
+
+  const roll = Math.random() * 100;
+  let cumulative = 0;
+  for (const entry of SCRATCH_WEIGHTS) {
+    cumulative += entry.weight;
+    if (roll < cumulative) {
+      return entry.value;
+    }
+  }
+  return 0;
+}
+
+function generateWeightedBoard(isGodLuck = false) {
+  const board = [];
+  for (let i = 0; i < 9; i++) {
+    board.push(rollWeightedTile(isGodLuck));
+  }
+  return board;
+}
+
+function formatTileLabel(val) {
+  if (val === 'SKULL') return '💀 BUST';
+  const match = SCRATCH_WEIGHTS.find(w => w.value === val);
+  if (match) return match.label;
+  return `${val}x`;
+}
 
 // In-memory active scratch cards: userId -> state
 const activeScratchCards = new Map();
@@ -20,11 +65,10 @@ function buildScratchKeyboard(userId, board, revealedIndices, isFinished = false
 
       let label = '❓';
       if (isRevealed) {
-        label = val === 'SKULL' ? '💀 BUST' : `${val}x`;
+        label = formatTileLabel(val);
       }
 
       if (isFinished) {
-        // Disabled button
         keyboard.text(label, `scratch:done:${userId}`);
       } else if (revealedIndices.includes(idx)) {
         keyboard.text(label, `scratch:noop:${userId}`);
@@ -41,7 +85,7 @@ function buildScratchKeyboard(userId, board, revealedIndices, isFinished = false
 export const scratch = {
   name: 'scratch',
   aliases: [],
-  description: 'Scratch 3 mystery multiplier tiles on a 3x3 scratchcard ticket (No Bet Limits)',
+  description: 'Scratch 3 mystery multiplier tiles on a 3x3 scratchcard ticket (Max Bet: 100M)',
   cooldown: 15,
 
   async execute(ctx) {
@@ -57,14 +101,15 @@ export const scratch = {
     if (!betStr) {
       return ctx.reply(
         `🎫 <b>Scratchcard Lottery</b>\n` +
-        `Usage: <code>/scratch &lt;bet|half|all&gt;</code> (Supports shorthand: 50k, 10m, 5b)\n\n` +
-        `Pick 3 mystery tiles on the 3x3 grid to accumulate multipliers! Watch out for the 💀 Skull.\n\n` +
+        `Usage: <code>/scratch &lt;bet|half|all&gt;</code> (Max Bet: 🪙 100,000,000)\n\n` +
+        `Pick 3 mystery tiles on the 3x3 grid! Watch out for the 💀 Bomb — hitting it forfeits your card.\n` +
+        `Max payout multiplier: <b>5x</b>\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         { parse_mode: 'HTML' }
       );
     }
 
-    const { valid, error, bet } = parseBet(betStr, user.wallet);
+    const { valid, error, bet: parsedBet } = parseBet(betStr, user.wallet);
     if (!valid) {
       if (error === 'INSUFFICIENT_FUNDS' || error === 'NO_COINS') {
         return ctx.reply(`❌ You don't have enough coins in your wallet! You only have 🪙 ${Number(user.wallet || 0).toLocaleString()}.`);
@@ -72,8 +117,15 @@ export const scratch = {
       return ctx.reply('❌ Please enter a valid positive number for your scratchcard bet.');
     }
 
-    if (bet <= 0) {
+    if (parsedBet <= 0) {
       return ctx.reply('❌ Bet must be at least 🪙 1.');
+    }
+
+    let bet = parsedBet;
+    let wasClamped = false;
+    if (bet > MAX_GAMBLE_BET) {
+      bet = MAX_GAMBLE_BET;
+      wasClamped = true;
     }
 
     // Deduct bet immediately with currency log
@@ -83,23 +135,15 @@ export const scratch = {
       details: `Scratchcard Bet: 🪙 ${bet.toLocaleString()}`
     });
 
-    // Apply Luck influence to board multipliers
     const luckInfo = await getLuckBreakdown(userId);
-    let pool = [...MULTIPLIER_POOL];
-    if (luckInfo.totalBonus >= 50) {
-      // High luck (Horseshoe / Clover / Admin Luck): Replace skull with massive 5x/10x bonus
-      pool = pool.map(v => v === 'SKULL' ? (Math.random() < 0.5 ? 5 : 10) : v);
-    } else if (luckInfo.totalBonus > 0 && Math.random() * 100 < luckInfo.totalBonus) {
-      // Moderate luck chance to eliminate skull
-      pool = pool.map(v => v === 'SKULL' ? 3 : v);
-    }
-
-    // Shuffle the 9 multipliers
-    const board = pool.sort(() => 0.5 - Math.random());
+    const isGodLuck = (user?.username || '').toLowerCase() === 'tzhunyuan' && luckInfo.customLuck >= 100;
+    const board = generateWeightedBoard(isGodLuck);
 
     const session = {
       userId,
       bet,
+      wasClamped,
+      isGodLuck,
       board,
       revealed: [],
       multipliers: []
@@ -108,12 +152,13 @@ export const scratch = {
 
     const keyboard = buildScratchKeyboard(userId, board, []);
 
+    const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
     const prompt = `🎫 <b>TeleMemer Lucky Scratchcard</b>\n` +
-      `Ticket Cost: <b>${formatCoins(bet)}</b>\n` +
+      `Ticket Cost: <b>${formatCoins(bet)}</b>${clampNotice}\n` +
       (luckInfo.totalBonus > 0 ? `🍀 <i>Luck Active: +${luckInfo.totalBonus}%</i>\n\n` : '\n') +
-      `Scratch <b>3 tiles</b> below by clicking the ❓ boxes. Beware the 💀!`;
+      `Scratch <b>3 tiles</b> below by clicking the ❓ boxes. Beware the 💀 Bomb!`;
 
-    await ctx.reply(prompt, {
+    return ctx.reply(prompt, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
@@ -143,15 +188,15 @@ export const scratch = {
     session.revealed.push(clickedIdx);
     const value = session.board[clickedIdx];
 
-    // Check Skull
+    // Hit 💀 Bomb: ends game immediately & forfeits remaining scratches/winnings
     if (value === 'SKULL') {
       activeScratchCards.delete(targetUserId);
       const finishedKeyboard = buildScratchKeyboard(targetUserId, session.board, session.revealed, true);
       const updatedUser = await userRepo.getUser(targetUserId);
       const updatedWallet = updatedUser?.wallet || 0;
 
-      const bustMsg = `💀 <b>BOOM! YOU HIT THE SKULL!</b>\n\n` +
-        `The cursed skull destroyed your scratchcard instantly!\n` +
+      const bustMsg = `💀 <b>BOOM! YOU HIT THE BOMB!</b>\n\n` +
+        `The cursed bomb detonated and forfeited your remaining scratches & winnings!\n` +
         `💸 <b>Lost:</b> ${formatCoins(session.bet)}\n` +
         `👛 <b>Wallet:</b> ${formatCoins(updatedWallet)}`;
 
@@ -159,7 +204,7 @@ export const scratch = {
         parse_mode: 'HTML',
         reply_markup: finishedKeyboard
       });
-      return ctx.answerCallbackQuery({ text: '💀 BUST! Hit the skull!', show_alert: true });
+      return ctx.answerCallbackQuery({ text: '💀 BUST! Hit the bomb!', show_alert: true });
     }
 
     session.multipliers.push(value);
@@ -167,7 +212,9 @@ export const scratch = {
     // If 3 tiles scratched, finish game!
     if (session.revealed.length >= 3) {
       activeScratchCards.delete(targetUserId);
-      const totalMult = session.multipliers.reduce((a, b) => a + b, 0);
+      const rawTotalMult = Number(session.multipliers.reduce((a, b) => a + b, 0).toFixed(2));
+      const wasMultCapped = !session.isGodLuck && rawTotalMult > MAX_STANDARD_MULTIPLIER;
+      const totalMult = wasMultCapped ? MAX_STANDARD_MULTIPLIER : rawTotalMult;
       const payout = Math.floor(session.bet * totalMult);
 
       if (payout > 0) {
@@ -183,10 +230,17 @@ export const scratch = {
       const updatedWallet = updatedUser?.wallet || 0;
       const finishedKeyboard = buildScratchKeyboard(targetUserId, session.board, session.revealed, true);
 
-      const winTitle = totalMult >= 3 ? '🎉 <b>MASSIVE SCRATCHCARD WIN!</b>' : '🎫 <b>SCRATCHCARD FINISHED!</b>';
+      const winTitle = totalMult >= 2 ? '🎉 <b>BIG SCRATCHCARD WIN!</b>' : '🎫 <b>SCRATCHCARD FINISHED!</b>';
+      const capTag = wasMultCapped ? ` <i>(Capped at ${MAX_STANDARD_MULTIPLIER}x max)</i>` : '';
+      const netProfit = payout - session.bet;
+      const netText = netProfit >= 0
+        ? `📈 <b>Net Profit:</b> +${formatCoins(netProfit)}`
+        : `📉 <b>Net Loss:</b> -${formatCoins(Math.abs(netProfit))}`;
+
       const summaryMsg = `${winTitle}\n\n` +
-        `• Scratched Multipliers: ${session.multipliers.map(m => `<b>${m}x</b>`).join(' + ')} = <b>${totalMult}x</b>\n` +
+        `• Scratched Multipliers: ${session.multipliers.map(m => `<b>${m}x</b>`).join(' + ')} = <b>${totalMult}x</b>${capTag}\n` +
         (payout > 0 ? `💰 <b>Total Payout:</b> +${formatCoins(payout)}\n` : `💸 <b>Lost:</b> ${formatCoins(session.bet)}\n`) +
+        `${netText}\n` +
         `👛 <b>New Wallet:</b> ${formatCoins(updatedWallet)}\n` +
         `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
         (xpRes.message ? `\n${xpRes.message}` : '');

@@ -246,11 +246,48 @@ export const items = {
     buyPrice: 10000000,
     sellPrice: 5000000,
     type: 'collectible',
+    prestigeKeep: true,
     craftRecipe: {
       pepecoin: 10,
       dragon: 1,
       kraken: 1
     }
+  },
+  zyloveletter: {
+    id: 'zyloveletter',
+    name: "ZYuan's Love Letter",
+    emoji: '💌',
+    buyPrice: 200000000000,
+    sellPrice: 20,
+    type: 'collectible',
+    prestigeKeep: true,
+    stockLimit: 1,
+    stockPeriod: 'weekly',
+    description: 'An ultra-rare, heartfelt love letter from ZYuan. Kept after Prestige! (Limited: 1 per week)'
+  },
+  mjnecklace: {
+    id: 'mjnecklace',
+    name: "MJune's Necklace",
+    emoji: '📿',
+    buyPrice: 200000000000,
+    sellPrice: 20,
+    type: 'collectible',
+    prestigeKeep: true,
+    stockLimit: 1,
+    stockPeriod: 'weekly',
+    description: "MJune's dazzling signature necklace. Kept after Prestige! (Limited: 1 per week)"
+  },
+  gtkcondom: {
+    id: 'gtkcondom',
+    name: 'GTK Brand Condom',
+    emoji: '🎈',
+    buyPrice: 20000000000,
+    sellPrice: 20,
+    type: 'consumable',
+    prestigeKeep: true,
+    stockLimit: 1,
+    stockPeriod: 'daily',
+    description: '/use to immediately gain +10 Levels! Kept after Prestige! (Limited: 1 per day)'
   }
 };
 
@@ -290,6 +327,12 @@ export function getCraftableItems() {
 export function getCollectibleItemIds() {
   return Object.values(items)
     .filter(i => i.type === 'collectible')
+    .map(i => i.id);
+}
+
+export function getPrestigeKeepItemIds() {
+  return Object.values(items)
+    .filter(i => i.type === 'collectible' || i.prestigeKeep === true)
     .map(i => i.id);
 }
 

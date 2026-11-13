@@ -1,8 +1,9 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
+import shopStockRepo from '../../database/shopStockRepo.js';
 import { getBuyableItems, getItem } from '../../config/items.js';
-import { formatCoins } from '../../utils/formatters.js';
+import { formatCoins, formatTime } from '../../utils/formatters.js';
 
 const ITEMS_PER_PAGE = 4;
 
@@ -16,15 +17,33 @@ async function buildShopPage(userId, page = 1) {
 
   const user = await userRepo.getUser(userId);
   const walletCoins = user ? Number(user.wallet || 0) : 0;
+  const stockMap = await shopStockRepo.getAllLimitedStocks();
 
   let text = `🛍️ <b>TeleMemer Black Market & Equipment Shop</b>\n` +
     `👛 <b>Your Wallet:</b> ${formatCoins(walletCoins)} | 📄 <b>Page ${currentPage} / ${totalPages}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
+  const stockInfoById = new Map();
+
   for (const item of pageItems) {
     const userQuantity = await inventoryRepo.getItem(userId, item.id);
-    text += `${item.emoji} <b>${item.name}</b> (<code>${item.id}</code>)\n` +
+    let stockLine = '';
+    if (item.stockLimit) {
+      const stockInfo = stockMap.get(item.id) || await shopStockRepo.getItemStock(item.id);
+      stockInfoById.set(item.id, stockInfo);
+      const resetInSec = Math.max(1, Math.ceil((stockInfo.nextResetAt - Date.now()) / 1000));
+      const periodTag = stockInfo.stockPeriod === 'weekly' ? 'Weekly' : 'Daily';
+      if (stockInfo.currentStock > 0) {
+        stockLine = `• 🔥 <b>Global Stock:</b> <b>${stockInfo.currentStock}/${stockInfo.stockLimit}</b> (${periodTag} | Resets in ${formatTime(resetInSec)})\n`;
+      } else {
+        stockLine = `• ❌ <b>SOLD OUT</b> (Restocks in <b>${formatTime(resetInSec)}</b>)\n`;
+      }
+    }
+
+    const prestigeTag = item.prestigeKeep ? ' 🛡️ <i>[Prestige-Proof]</i>' : '';
+    text += `${item.emoji} <b>${item.name}</b> (<code>${item.id}</code>)${prestigeTag}\n` +
       `• <b>Price:</b> ${formatCoins(item.buyPrice)} | Owned: <b>${userQuantity}</b>\n` +
+      stockLine +
       `• <i>${item.description}</i>\n\n`;
   }
 
@@ -35,7 +54,10 @@ async function buildShopPage(userId, page = 1) {
 
   // Quick-buy buttons for this page
   pageItems.forEach((item, index) => {
-    keyboard.text(`🛒 Buy 1x ${item.name}`, `shop:buy:${item.id}:${currentPage}:${userId}`);
+    const stockInfo = stockInfoById.get(item.id);
+    const isSoldOut = stockInfo && stockInfo.currentStock <= 0;
+    const btnLabel = isSoldOut ? `❌ ${item.name} (Sold Out)` : `🛒 Buy 1x ${item.name}`;
+    keyboard.text(btnLabel, `shop:buy:${item.id}:${currentPage}:${userId}`);
     if (index % 2 === 1) keyboard.row();
   });
 
@@ -56,7 +78,7 @@ async function buildShopPage(userId, page = 1) {
 export const shop = {
   name: 'shop',
   aliases: [],
-  description: 'Browse weapons, tools, defenses, and consumables in the shop',
+  description: 'Browse weapons, tools, defenses, and limited prestige-proof items in the shop',
   cooldown: 3,
 
   async execute(ctx) {
@@ -88,7 +110,7 @@ export const shop = {
           reply_markup: keyboard
         });
         await ctx.answerCallbackQuery();
-      } catch (err) {
+      } catch {
         await ctx.answerCallbackQuery({ text: 'Already on this page.' });
       }
       return;
@@ -110,6 +132,20 @@ export const shop = {
           text: `❌ Insufficient funds! You need ${formatCoins(item.buyPrice)}.`,
           show_alert: true
         });
+      }
+
+      // Atomically claim global limited stock if applicable
+      if (item.stockLimit) {
+        const stockRes = await shopStockRepo.purchaseLimitedStock(item.id, 1);
+        if (!stockRes.success) {
+          const resetInSec = Math.max(1, Math.ceil((stockRes.nextResetAt - Date.now()) / 1000));
+          const { text, keyboard } = await buildShopPage(targetUserId, page);
+          await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }).catch(() => {});
+          return ctx.answerCallbackQuery({
+            text: `❌ ${item.name} is SOLD OUT globally! Restocks in ${formatTime(resetInSec)}.`,
+            show_alert: true
+          });
+        }
       }
 
       // Deduct wallet and add item

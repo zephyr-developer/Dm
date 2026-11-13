@@ -1,8 +1,9 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
+import shopStockRepo from '../../database/shopStockRepo.js';
 import { findItem, getItem } from '../../config/items.js';
-import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
+import { formatCoins, formatTime, sanitizeHtml } from '../../utils/formatters.js';
 
 export const buy = {
   name: 'buy',
@@ -59,11 +60,29 @@ export const buy = {
       );
     }
 
+    // Check global limited stock if applicable
+    let stockInfo = null;
+    if (item.stockLimit) {
+      stockInfo = await shopStockRepo.getItemStock(item.id);
+      if (stockInfo.currentStock <= 0) {
+        const resetInSec = Math.max(1, Math.ceil((stockInfo.nextResetAt - Date.now()) / 1000));
+        return ctx.reply(
+          `❌ <b>SOLD OUT!</b>\n` +
+          `${item.emoji} <b>${item.name}</b> has <b>0/${stockInfo.stockLimit}</b> global stock left!\n` +
+          `⏳ Restocks in: <b>${formatTime(resetInSec)}</b>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    }
+
     const currentWallet = Number(user.wallet || 0);
     let quantity = 1;
 
     if (quantityStr === 'all' || quantityStr === 'max') {
       quantity = Math.floor(currentWallet / item.buyPrice);
+      if (stockInfo && quantity > stockInfo.currentStock) {
+        quantity = stockInfo.currentStock;
+      }
       if (quantity <= 0) {
         return ctx.reply(
           `💸 <b>Insufficient Funds!</b>\n` +
@@ -78,6 +97,13 @@ export const buy = {
         return ctx.reply('❌ Quantity must be at least 1.');
       }
       quantity = parsed;
+    }
+
+    if (stockInfo && quantity > stockInfo.currentStock) {
+      return ctx.reply(
+        `❌ Only <b>${stockInfo.currentStock}/${stockInfo.stockLimit}</b>x ${item.emoji} <b>${item.name}</b> left in global stock right now!`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     const totalCost = item.buyPrice * quantity;
@@ -95,11 +121,15 @@ export const buy = {
       .text('❌ Cancel', `buy:no:${userId}`)
       .text('✅ Confirm', `buy:yes:${item.id}:${quantity}:${userId}`);
 
+    const stockNotice = stockInfo
+      ? `\n• <b>Global Stock:</b> ${stockInfo.currentStock}/${stockInfo.stockLimit} remaining`
+      : '';
+
     return ctx.reply(
       `🛒 <b>Confirm Shop Purchase</b>\n\n` +
       `• <b>Item:</b> ${quantity.toLocaleString('en-US')}x ${item.emoji} <b>${item.name}</b>\n` +
       `• <b>Total Cost:</b> ${formatCoins(totalCost)}\n` +
-      `• <b>Your Wallet:</b> ${formatCoins(currentWallet)}\n\n` +
+      `• <b>Your Wallet:</b> ${formatCoins(currentWallet)}${stockNotice}\n\n` +
       `<i>Do you want to complete this purchase?</i>`,
       {
         parse_mode: 'HTML',
@@ -148,6 +178,21 @@ export const buy = {
           `You need <b>${formatCoins(totalCost)}</b>, but your wallet only has <b>${formatCoins(currentWallet)}</b>.`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
+      }
+
+      // Atomically lock & deduct limited global shop stock before taking coins
+      if (item.stockLimit) {
+        const stockRes = await shopStockRepo.purchaseLimitedStock(item.id, quantity);
+        if (!stockRes.success) {
+          const resetInSec = Math.max(1, Math.ceil((stockRes.nextResetAt - Date.now()) / 1000));
+          await ctx.answerCallbackQuery({ text: 'Sold out!', show_alert: true });
+          return ctx.editMessageText(
+            `❌ <b>Purchase Failed: SOLD OUT!</b>\n` +
+            `Someone else claimed the remaining stock of ${item.emoji} <b>${item.name}</b>!\n` +
+            `⏳ Restocks in: <b>${formatTime(resetInSec)}</b>`,
+            { parse_mode: 'HTML' }
+          ).catch(() => {});
+        }
       }
 
       const updated = await userRepo.updateCoins(targetUserId, {

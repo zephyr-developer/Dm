@@ -22,6 +22,7 @@ const memoryDb = {
   cooldowns: new Map(), // key: `${userId}:${command}`
   group_members: new Set(), // key: `${chatId}:${userId}`
   settings: new Map(),
+  shop_stock: new Map(), // key: item_id -> { item_id, current_stock, next_reset_at }
   currency_logs: [],
   logAutoInc: 1
 };
@@ -178,6 +179,15 @@ export async function initDatabase() {
       );
     `);
 
+    // 8. Global Limited Shop Stock Table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shop_stock (
+        item_id VARCHAR(64) PRIMARY KEY,
+        current_stock INTEGER NOT NULL,
+        next_reset_at BIGINT NOT NULL
+      );
+    `);
+
     // Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_group_members_chat ON group_members(chat_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_networth ON users((wallet + bank) DESC);`);
@@ -321,6 +331,40 @@ function executeMemoryQuery(text, params = []) {
         return { rows: [{ ...u }], rowCount: 1 };
       }
     }
+    if (norm.includes('SET LEVEL = $1, XP = $2, WALLET = $3, BANK_MAX = $4')) {
+      const u = memoryDb.users.get(Number(params[4]));
+      if (u) {
+        u.level = Number(params[0]);
+        u.xp = Number(params[1]);
+        u.wallet = Number(params[2]);
+        u.bank_max = Number(params[3]);
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET LEVEL = $1, WALLET = $2, BANK_MAX = $3')) {
+      const u = memoryDb.users.get(Number(params[3]));
+      if (u) {
+        u.level = Number(params[0]);
+        u.wallet = Number(params[1]);
+        u.bank_max = Number(params[2]);
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET WALLET = $1, CUSTOM_LUCK = $2')) {
+      const u = memoryDb.users.get(Number(params[2]));
+      if (u) {
+        u.wallet = Number(params[0]);
+        u.custom_luck = Number(params[1]);
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET WALLET = $1 WHERE USER_ID = $2')) {
+      const u = memoryDb.users.get(Number(params[1]));
+      if (u) {
+        u.wallet = Number(params[0]);
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
     if (norm.includes('SET XP = $1, LEVEL = $2')) {
       const xp = Number(params[0]);
       const level = Number(params[1]);
@@ -411,14 +455,14 @@ function executeMemoryQuery(text, params = []) {
     return { rows: [{ ...current }], rowCount: 1 };
   }
 
-  if (norm.includes('FROM INVENTORIES') && norm.includes('WHERE USER_ID = $1 AND ITEM_ID = $2')) {
+  if (norm.startsWith('SELECT') && norm.includes('FROM INVENTORIES') && norm.includes('WHERE USER_ID = $1 AND ITEM_ID = $2')) {
     const userId = Number(params[0]);
     const itemId = String(params[1]);
     const item = memoryDb.inventories.get(`${userId}:${itemId}`);
     return { rows: item && item.quantity > 0 ? [{ ...item }] : [], rowCount: item ? 1 : 0 };
   }
 
-  if (norm.includes('FROM INVENTORIES') && norm.includes('WHERE USER_ID = $1')) {
+  if (norm.startsWith('SELECT') && norm.includes('FROM INVENTORIES') && norm.includes('WHERE USER_ID = $1')) {
     const userId = Number(params[0]);
     const items = [];
     for (const [k, v] of memoryDb.inventories.entries()) {
@@ -429,8 +473,19 @@ function executeMemoryQuery(text, params = []) {
 
   if (norm.startsWith('DELETE FROM INVENTORIES')) {
     const userId = Number(params[0]);
-    for (const k of Array.from(memoryDb.inventories.keys())) {
-      if (k.startsWith(`${userId}:`)) memoryDb.inventories.delete(k);
+    if (norm.includes('AND ITEM_ID = $2')) {
+      memoryDb.inventories.delete(`${userId}:${String(params[1])}`);
+    } else if (norm.includes('ITEM_ID NOT IN')) {
+      const keepSet = new Set(params.slice(1).map(String));
+      for (const [k, v] of Array.from(memoryDb.inventories.entries())) {
+        if (k.startsWith(`${userId}:`) && !keepSet.has(v.item_id)) {
+          memoryDb.inventories.delete(k);
+        }
+      }
+    } else {
+      for (const k of Array.from(memoryDb.inventories.keys())) {
+        if (k.startsWith(`${userId}:`)) memoryDb.inventories.delete(k);
+      }
     }
     return { rows: [], rowCount: 1 };
   }
@@ -497,6 +552,45 @@ function executeMemoryQuery(text, params = []) {
   if (norm.includes('INSERT INTO GROUP_MEMBERS')) {
     memoryDb.group_members.add(`${params[0]}:${params[1]}`);
     return { rows: [], rowCount: 1 };
+  }
+
+  // 7. Shop Stock
+  if (norm.includes('FROM SHOP_STOCK') && norm.includes('WHERE ITEM_ID = $1')) {
+    const row = memoryDb.shop_stock.get(String(params[0]));
+    return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+  }
+
+  if (norm.startsWith('INSERT INTO SHOP_STOCK')) {
+    const itemId = String(params[0]);
+    const currentStock = Number(params[1]);
+    const nextResetAt = Number(params[2]);
+    const existing = memoryDb.shop_stock.get(itemId);
+    if (!existing || norm.includes('DO UPDATE')) {
+      const row = { item_id: itemId, current_stock: currentStock, next_reset_at: nextResetAt };
+      memoryDb.shop_stock.set(itemId, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    return { rows: [{ ...existing }], rowCount: 1 };
+  }
+
+  if (norm.startsWith('UPDATE SHOP_STOCK')) {
+    if (norm.includes('SET CURRENT_STOCK = $1, NEXT_RESET_AT = $2')) {
+      const currentStock = Number(params[0]);
+      const nextResetAt = Number(params[1]);
+      const itemId = String(params[2]);
+      const row = { item_id: itemId, current_stock: currentStock, next_reset_at: nextResetAt };
+      memoryDb.shop_stock.set(itemId, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (norm.includes('SET CURRENT_STOCK = $1 WHERE ITEM_ID = $2')) {
+      const currentStock = Number(params[0]);
+      const itemId = String(params[1]);
+      const existing = memoryDb.shop_stock.get(itemId);
+      if (existing) {
+        existing.current_stock = currentStock;
+        return { rows: [{ ...existing }], rowCount: 1 };
+      }
+    }
   }
 
   return { rows: [], rowCount: 0 };

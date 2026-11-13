@@ -3,6 +3,8 @@ import userRepo from '../../database/userRepo.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, parseBet } from '../../utils/formatters.js';
 
+const MAX_GAMBLE_BET = 100_000_000;
+
 const SUITS = ['♠️', '♥️', '♦️', '♣️'];
 const VALUES = [
   { val: '2', score: 2 },
@@ -27,7 +29,11 @@ function createDeck() {
       deck.push({ suit: s, val: v.val, score: v.score });
     }
   }
-  return deck.sort(() => 0.5 - Math.random());
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
 }
 
 function calculateHand(cards) {
@@ -60,7 +66,7 @@ const activeGames = new Map();
 export const blackjack = {
   name: 'blackjack',
   aliases: ['bj'],
-  description: 'Play a full game of soft-17 Blackjack with Double Down (No Bet Limits)',
+  description: 'Play soft-17 Blackjack with Double Down (Max Bet: 100M)',
   cooldown: 15, // 8s for Premium
 
   async execute(ctx) {
@@ -76,13 +82,13 @@ export const blackjack = {
     if (!betStr) {
       return ctx.reply(
         `🃏 <b>Blackjack (21)</b>\n` +
-        `Usage: <code>/bj &lt;bet|half|all&gt;</code> (Supports shorthand: 50k, 10m, 5b)\n\n` +
+        `Usage: <code>/bj &lt;bet|half|all&gt;</code> (Max Bet: 🪙 100,000,000)\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         { parse_mode: 'HTML' }
       );
     }
 
-    const { valid, error, bet } = parseBet(betStr, user.wallet);
+    const { valid, error, bet: parsedBet } = parseBet(betStr, user.wallet);
     if (!valid) {
       if (error === 'INSUFFICIENT_FUNDS' || error === 'NO_COINS') {
         return ctx.reply(`❌ You don't have enough coins in your wallet! You only have 🪙 ${Number(user.wallet || 0).toLocaleString()}.`);
@@ -90,8 +96,15 @@ export const blackjack = {
       return ctx.reply('❌ Please enter a valid positive number for your bet.');
     }
 
-    if (bet <= 0) {
+    if (parsedBet <= 0) {
       return ctx.reply('❌ Bet must be at least 🪙 1.');
+    }
+
+    let bet = parsedBet;
+    let wasClamped = false;
+    if (bet > MAX_GAMBLE_BET) {
+      bet = MAX_GAMBLE_BET;
+      wasClamped = true;
     }
 
     // Deduct bet immediately
@@ -113,6 +126,7 @@ export const blackjack = {
     }
 
     const playerScore = calculateHand(playerCards);
+    const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
 
     // Check Natural Blackjack (21 on 2 cards)
     if (playerScore === 21) {
@@ -123,7 +137,7 @@ export const blackjack = {
         details: 'Natural Blackjack 3:2 Payout'
       });
 
-      const winMsg = `🃏 <b>BLACKJACK! NATURAL 21!</b> 🎉\n\n` +
+      const winMsg = `🃏 <b>BLACKJACK! NATURAL 21!</b> 🎉${clampNotice}\n\n` +
         `👤 <b>Your Hand:</b> ${renderHand(playerCards)} (Score: <b>21</b>)\n` +
         `🤖 <b>Dealer Hand:</b> ${renderHand(dealerCards)} (Score: <b>${calculateHand(dealerCards)}</b>)\n\n` +
         `💰 <b>Payout (3:2):</b> +${formatCoins(payout)}!\n` +
@@ -146,17 +160,17 @@ export const blackjack = {
       .text('🃏 Hit', `blackjack:hit:${userId}`)
       .text('🛑 Stand', `blackjack:stand:${userId}`);
 
-    // Allow double down if player has enough wallet
-    if (afterBetUser.wallet >= bet) {
+    // Allow double down only if player has enough wallet AND total bet stays within MAX_GAMBLE_BET
+    if (afterBetUser.wallet >= bet && bet * 2 <= MAX_GAMBLE_BET) {
       keyboard.text('💰 Double Down', `blackjack:double:${userId}`);
     }
 
-    const tableMsg = `🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(bet)})\n\n` +
+    const tableMsg = `🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(bet)})${clampNotice}\n\n` +
       `👤 <b>Your Hand:</b> ${renderHand(playerCards)} (Score: <b>${playerScore}</b>)\n` +
       `🤖 <b>Dealer Hand:</b> ${renderHand(dealerCards, true)} (Score: <b>?</b>)\n\n` +
       `<i>What is your move?</i>`;
 
-    await ctx.reply(tableMsg, {
+    return ctx.reply(tableMsg, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
@@ -182,7 +196,6 @@ export const blackjack = {
     if (action === 'hit') {
       let drawnCard = game.deck.pop();
 
-      // If high luck and current score <= 11, try to pull a high card
       const currentScore = calculateHand(game.playerCards);
       if (luckInfo.totalBonus >= 50 && currentScore <= 11 && Math.random() < 0.60) {
         drawnCard = { suit: '💎', val: '10', score: 10 };
@@ -191,7 +204,6 @@ export const blackjack = {
       game.playerCards.push(drawnCard);
       const score = calculateHand(game.playerCards);
 
-      // BUST!
       if (score > 21) {
         activeGames.delete(targetUserId);
         const bustMsg = `💥 <b>BUSTED! (Score: ${score})</b>\n\n` +
@@ -204,7 +216,6 @@ export const blackjack = {
         return ctx.answerCallbackQuery({ text: 'Busted!' });
       }
 
-      // Re-render table
       const keyboard = new InlineKeyboard()
         .text('🃏 Hit', `blackjack:hit:${targetUserId}`)
         .text('🛑 Stand', `blackjack:stand:${targetUserId}`);
@@ -225,6 +236,13 @@ export const blackjack = {
     // ACTION 2: DOUBLE DOWN
     // ==========================================
     if (action === 'double') {
+      if (game.bet * 2 > MAX_GAMBLE_BET) {
+        return ctx.answerCallbackQuery({
+          text: `❌ Double Down exceeds the 🪙 100,000,000 max table limit!`,
+          show_alert: true
+        });
+      }
+
       const currentWallet = Number(user?.wallet || 0);
       if (currentWallet < game.bet) {
         return ctx.answerCallbackQuery({
@@ -281,10 +299,8 @@ async function resolveDealerTurn(ctx, game, targetUserId) {
   const playerScore = calculateHand(game.playerCards);
   let dealerScore = calculateHand(game.dealerCards);
 
-  // Dealer hits on soft 17
   while (dealerScore < 17) {
     let nextCard = game.deck.pop();
-    // High luck makes dealer more likely to bust if dealer is at 12-16
     if (luckInfo.totalBonus >= 50 && dealerScore >= 12 && Math.random() < 0.50) {
       nextCard = { suit: '♠️', val: '10', score: 10 };
     }

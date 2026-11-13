@@ -46,9 +46,16 @@ export const userRepo = {
 
   /**
    * Centralized coin movement handler with automatic currency logging and log pruning.
-   * Runs in an atomic PostgreSQL transaction.
+   * Runs in an atomic PostgreSQL transaction with overflow protection.
    */
   async updateCoins(userId, { walletDelta = 0, bankDelta = 0, sourceCommand = '/system', details = 'Coin update' } = {}) {
+    const MAX_BALANCE = 1_000_000_000_000_000; // 1 Quadrillion max cap (< Number.MAX_SAFE_INTEGER)
+    const clampBalance = (val) => {
+      const num = Number(val);
+      if (!Number.isFinite(num) || isNaN(num)) return 0;
+      return Math.min(MAX_BALANCE, Math.max(0, Math.floor(num)));
+    };
+
     const client = await getClient();
     try {
       await client.query('BEGIN');
@@ -69,8 +76,11 @@ export const userRepo = {
       const oldWallet = Number(user.wallet || 0);
       const oldBank = Number(user.bank || 0);
 
-      const newWallet = Math.max(0, oldWallet + Number(walletDelta || 0));
-      const newBank = Math.max(0, oldBank + Number(bankDelta || 0));
+      const newWallet = clampBalance(oldWallet + Number(walletDelta || 0));
+      const newBank = clampBalance(oldBank + Number(bankDelta || 0));
+
+      const actualWalletDelta = newWallet - oldWallet;
+      const actualBankDelta = newBank - oldBank;
 
       const updateRes = await client.query(
         'UPDATE users SET wallet = $1, bank = $2, updated_at = NOW() WHERE user_id = $3 RETURNING *;',
@@ -79,25 +89,25 @@ export const userRepo = {
       const updatedUser = updateRes.rows[0];
 
       // 1. Log wallet change if any
-      if (walletDelta !== 0) {
+      if (actualWalletDelta !== 0) {
         await client.query(
           `INSERT INTO currency_logs (user_id, change_amount, location, wallet_after, bank_after, source_command, details)
            VALUES ($1, $2, $3, $4, $5, $6, $7);`,
-          [userId, walletDelta, 'wallet', newWallet, newBank, sourceCommand, details]
+          [userId, actualWalletDelta, 'wallet', newWallet, newBank, sourceCommand, details]
         );
       }
 
       // 2. Log bank change if any
-      if (bankDelta !== 0) {
+      if (actualBankDelta !== 0) {
         await client.query(
           `INSERT INTO currency_logs (user_id, change_amount, location, wallet_after, bank_after, source_command, details)
            VALUES ($1, $2, $3, $4, $5, $6, $7);`,
-          [userId, bankDelta, 'bank', newWallet, newBank, sourceCommand, details]
+          [userId, actualBankDelta, 'bank', newWallet, newBank, sourceCommand, details]
         );
       }
 
       // 3. Prune old logs beyond 100 entries for this user
-      if (walletDelta !== 0 || bankDelta !== 0) {
+      if (actualWalletDelta !== 0 || actualBankDelta !== 0) {
         await client.query(
           `DELETE FROM currency_logs
            WHERE id IN (
@@ -132,9 +142,19 @@ export const userRepo = {
   },
 
   async setWallet(userId, amount, sourceCommand = '/system', details = 'Set wallet') {
+    const MAX_BALANCE = 1_000_000_000_000_000;
+    const clampedTarget = Math.min(MAX_BALANCE, Math.max(0, Math.floor(Number(amount || 0))));
     const user = await this.getOrInitUser(userId);
-    const delta = amount - user.wallet;
+    const delta = clampedTarget - Number(user.wallet || 0);
     return await this.updateCoins(userId, { walletDelta: delta, sourceCommand, details });
+  },
+
+  async setBank(userId, amount, sourceCommand = '/system', details = 'Set bank') {
+    const MAX_BALANCE = 1_000_000_000_000_000;
+    const clampedTarget = Math.min(MAX_BALANCE, Math.max(0, Math.floor(Number(amount || 0))));
+    const user = await this.getOrInitUser(userId);
+    const delta = clampedTarget - Number(user.bank || 0);
+    return await this.updateCoins(userId, { bankDelta: delta, sourceCommand, details });
   },
 
   async addWallet(userId, amount, sourceCommand = '/system', details = 'Add coins') {

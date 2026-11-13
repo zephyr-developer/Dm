@@ -4,13 +4,15 @@ import { addXp } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, parseBet, randomBetween } from '../../utils/formatters.js';
 
+const MAX_GAMBLE_BET = 100_000_000;
+
 // In-memory sessions: userId -> { hint, secret, bet }
 const activeHLSessions = new Map();
 
 export const highlow = {
   name: 'highlow',
   aliases: ['hl'],
-  description: 'Guess whether mystery number is higher, lower, or jackpot (Optional bets with 1.5x win & 5x Jackpot)',
+  description: 'Guess whether mystery number is higher, lower, or jackpot (Max Bet: 100M)',
   cooldown: 20, // 10s for Premium
 
   async execute(ctx) {
@@ -19,6 +21,7 @@ export const highlow = {
 
     const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
     let bet = 0;
+    let wasClamped = false;
 
     // Optional bet handling
     if (betStr) {
@@ -31,6 +34,10 @@ export const highlow = {
       }
 
       bet = parsedBet;
+      if (bet > MAX_GAMBLE_BET) {
+        bet = MAX_GAMBLE_BET;
+        wasClamped = true;
+      }
 
       // Deduct bet immediately
       if (bet > 0) {
@@ -52,16 +59,18 @@ export const highlow = {
       .text('🎯 JACKPOT! (Same)', `highlow:jackpot:${userId}`)
       .text('⬇️ Lower', `highlow:lower:${userId}`);
 
+    const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
     const betNotice = bet > 0
-      ? `💰 <b>Active Bet:</b> ${formatCoins(bet)} (Win: <b>1.5x</b> | Jackpot: <b>5x</b>)\n\n`
-      : `🎮 <b>Free Play Mode</b> (Bet optional: <code>/highlow &lt;amount&gt;</code>)\n\n`;
+      ? `💰 <b>Active Bet:</b> ${formatCoins(bet)} (Win: <b>1.4x</b> | Jackpot: <b>5x</b>)${clampNotice}\n\n`
+      : `🎮 <b>Free Play Mode</b> (Bet optional: <code>/highlow &lt;amount&gt;</code>, Max: 100M)\n\n`;
 
     const prompt = `🎲 <b>High-Low Mystery Number</b>\n\n` +
       betNotice +
       `The visible hint number is: <b>[ ${hint} ]</b>\n\n` +
-      `Is the secret mystery number (1–100) <b>Higher</b>, <b>Lower</b>, or an exact <b>Jackpot</b> match?`;
+      `Is the secret mystery number (1–100) <b>Higher</b>, <b>Lower</b>, or an exact <b>Jackpot</b> match?\n` +
+      `<i>(Note: If secret equals hint, House wins unless you pick Jackpot!)</i>`;
 
-    await ctx.reply(prompt, {
+    return ctx.reply(prompt, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });
@@ -82,13 +91,13 @@ export const highlow = {
     let { hint, secret, bet } = session;
     const luckInfo = await getLuckBreakdown(targetUserId);
 
-    // LuckEngine: Tilt mystery number if player has active luck
-    if (luckInfo.totalBonus > 0) {
-      if (choice === 'jackpot' && luckInfo.customLuck >= 50 && Math.random() < 0.50) {
+    // LuckEngine: Only tilt for owner/custom_luck >= 50 so standard casino edge stays negative
+    if (luckInfo.customLuck >= 50) {
+      if (choice === 'jackpot' && Math.random() < 0.50) {
         secret = hint;
-      } else if (choice === 'higher' && secret <= hint && Math.random() < Math.min(0.85, luckInfo.totalBonus / 120)) {
+      } else if (choice === 'higher' && secret <= hint && Math.random() < Math.min(0.80, luckInfo.customLuck / 120)) {
         secret = Math.min(100, hint + randomBetween(1, 15));
-      } else if (choice === 'lower' && secret >= hint && Math.random() < Math.min(0.85, luckInfo.totalBonus / 120)) {
+      } else if (choice === 'lower' && secret >= hint && Math.random() < Math.min(0.80, luckInfo.customLuck / 120)) {
         secret = Math.max(1, hint - randomBetween(1, 15));
       }
     }
@@ -96,6 +105,7 @@ export const highlow = {
     let isWin = false;
     let isJackpot = false;
 
+    // House wins on secret === hint unless player explicitly picked 'jackpot'
     if (choice === 'higher' && secret > hint) isWin = true;
     else if (choice === 'lower' && secret < hint) isWin = true;
     else if (choice === 'jackpot' && secret === hint) {
@@ -109,7 +119,7 @@ export const highlow = {
 
       if (isJackpot) {
         if (bet > 0) {
-          reward = Math.floor(bet * 5); // 5x massive payout!
+          reward = Math.floor(bet * 5);
           winTitle = '🎯 <b>JACKPOT EXACT MATCH! 5X PAYOUT!</b> 🌟';
         } else {
           reward = 25000;
@@ -117,8 +127,8 @@ export const highlow = {
         }
       } else {
         if (bet > 0) {
-          reward = Math.floor(bet * 1.5); // 1.5x payout!
-          winTitle = '🎉 <b>CORRECT GUESS! 1.5X PAYOUT!</b>';
+          reward = Math.floor(bet * 1.4);
+          winTitle = '🎉 <b>CORRECT GUESS! 1.4X PAYOUT!</b>';
         } else {
           const base = randomBetween(800, 2000);
           reward = Math.floor(base * (1 + (luckInfo.totalBonus / 200)));
@@ -131,13 +141,13 @@ export const highlow = {
         sourceCommand: '/highlow',
         details: isJackpot
           ? `High-Low Exact Jackpot (${bet > 0 ? '5x' : '25k'})`
-          : `High-Low Win (${choice}${bet > 0 ? ' 1.5x' : ''})`
+          : `High-Low Win (${choice}${bet > 0 ? ' 1.4x' : ''})`
       });
       const xpRes = await addXp(targetUserId, isJackpot ? 100 : 25);
 
       const updatedUser = await userRepo.getUser(targetUserId);
       const updatedWallet = updatedUser?.wallet || 0;
-      let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
+      const luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
       const msg = `${winTitle}${luckTag}\n\n` +
         `• Hint Number: <b>${hint}</b>\n` +
@@ -156,7 +166,11 @@ export const highlow = {
       const updatedUser = await userRepo.getUser(targetUserId);
       const updatedWallet = updatedUser?.wallet || 0;
 
-      const msg = `💀 <b>WRONG GUESS!</b>\n\n` +
+      const tieNotice = secret === hint && choice !== 'jackpot'
+        ? `\n⚖️ <i>Exact tie (${hint}) goes to the House!</i>`
+        : '';
+
+      const msg = `💀 <b>WRONG GUESS!</b>${tieNotice}\n\n` +
         `• Hint Number: <b>${hint}</b>\n` +
         `• Secret Number was: <b>${secret}</b>\n` +
         `• Your Guess: <i>${choice.toUpperCase()}</i>\n\n` +

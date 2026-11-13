@@ -1,6 +1,6 @@
 import userRepo from '../database/userRepo.js';
 import inventoryRepo from '../database/inventoryRepo.js';
-import { items, getCollectibleItemIds } from '../config/items.js';
+import { items, getPrestigeKeepItemIds } from '../config/items.js';
 import { formatCoins, randomBetween, pickRandom } from './formatters.js';
 
 export async function handleDeath(ctx, userId, reason = 'a fatal accident') {
@@ -35,9 +35,9 @@ export async function handleDeath(ctx, userId, reason = 'a fatal accident') {
   let itemLost = null;
 
   if (!hasAppleBuff) {
-    const collectibleIds = new Set(getCollectibleItemIds());
+    const protectedIds = new Set(getPrestigeKeepItemIds());
     const inventory = await inventoryRepo.getUserInventory(userId);
-    const eligibleItems = inventory.filter(inv => !collectibleIds.has(inv.item_id) && inv.quantity > 0);
+    const eligibleItems = inventory.filter(inv => !protectedIds.has(inv.item_id) && inv.quantity > 0);
 
     if (eligibleItems.length > 0) {
       const chosen = pickRandom(eligibleItems);

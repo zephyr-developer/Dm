@@ -43,8 +43,9 @@ async function buildInventoryCard(targetUser, page = 1, viewerId = targetUser.us
   pageItems.forEach(entry => {
     const itm = items[entry.item_id] || { name: entry.item_id, emoji: '📦', type: 'item', sellPrice: 0 };
     const stackValue = itm.sellPrice * entry.quantity;
+    const keepBadge = (itm.prestigeKeep || itm.type === 'collectible') ? ' 🛡️ <i>[Prestige-Proof]</i>' : '';
 
-    text += `${itm.emoji} <b>${itm.name}</b> × <b>${entry.quantity.toLocaleString('en-US')}</b>\n` +
+    text += `${itm.emoji} <b>${itm.name}</b> × <b>${entry.quantity.toLocaleString('en-US')}</b>${keepBadge}\n` +
       `• Type: <i>${itm.type}</i> | Sell Value: ${formatCoins(stackValue)}\n` +
       `• ID: <code>${entry.item_id}</code>\n\n`;
   });

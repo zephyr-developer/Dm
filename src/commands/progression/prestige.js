@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
-import { getCollectibleItemIds } from '../../config/items.js';
+import { getPrestigeKeepItemIds } from '../../config/items.js';
 import { formatCoins } from '../../utils/formatters.js';
 
 // Prevent concurrent double-execution of the prestige ritual for the same user
@@ -55,7 +55,7 @@ async function buildPrestigeCard(userId) {
     `• 🔄 Level reset to 1 (XP reset to 0)\n` +
     `• 💸 Wallet & Bank balances reset to 0\n` +
     `• 🎒 Non-collectible items wiped from backpack\n` +
-    `• 🏆 <b>All Rare Collectibles (Pepe Coin, Pepe Trophy) ARE SAVED!</b>\n\n` +
+    `• 🏆 <b>All Collectibles & Prestige-Proof Items ARE SAVED!</b>\n\n` +
     `🎁 <b>TIER ${targetPrestige} ASCENSION REWARDS:</b>\n` +
     `• 🌟 +1 Prestige Rank badge (+1% permanent XP multiplier per tier)\n` +
     `• 🏛️ <b>+${formatCoins(rewardPlan.bankBonus)} permanent Bank Capacity</b>\n` +
@@ -170,8 +170,8 @@ export const prestige = {
         // Finalize DB wipe and reward grant
         await userRepo.prestigeReset(targetUserId, targetPrestige, newBankMax);
 
-        const collectibleIds = getCollectibleItemIds();
-        await inventoryRepo.wipeNonCollectibleInventory(targetUserId, collectibleIds);
+        const keepIds = getPrestigeKeepItemIds();
+        await inventoryRepo.wipeNonCollectibleInventory(targetUserId, keepIds);
 
         for (const reward of rewardPlan.items) {
           await inventoryRepo.addItem(targetUserId, reward.itemId, reward.qty);
@@ -185,7 +185,7 @@ export const prestige = {
           `🏛️ <b>Bank Capacity Added:</b> +${formatCoins(rewardPlan.bankBonus)}\n` +
           `🏛️ <b>New Bank Max:</b> ${formatCoins(newBankMax)}\n` +
           `🎁 <b>Scaling Ascension Package:</b>\n${rewardSummary}\n\n` +
-          `🏆 <i>Your rare Pepe Collectibles have been preserved in your vault.</i>\n` +
+          `🏆 <i>Your rare Collectibles & Prestige-Proof items have been preserved in your vault.</i>\n` +
           `Run <code>/flow</code> to dominate your new prestige run!`;
 
         await ctx.editMessageText(celebration, { parse_mode: 'HTML' }).catch(() => {});

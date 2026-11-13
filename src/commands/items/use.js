@@ -1,11 +1,11 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
+import { addLevels } from '../../utils/levelEngine.js';
 import { findItem, getItem } from '../../config/items.js';
 import { formatCoins, formatTime, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
 
-// In-memory active coin bomb drops: bombId -> { creatorId, creatorName, totalCoins, claimed: [] }
-const activeCoinBombs = new Map();
+global.activeCoinBombs = global.activeCoinBombs || new Map();
 
 const USABLE_ITEM_IDS = new Set([
   'banknote',
@@ -14,7 +14,8 @@ const USABLE_ITEM_IDS = new Set([
   'vaultlock',
   'horseshoe',
   'apple',
-  'coinbomb'
+  'coinbomb',
+  'gtkcondom'
 ]);
 
 export const use = {
@@ -44,7 +45,8 @@ export const use = {
         `• 🏦 <code>vaultlock</code> - Protect bank vault against 1 heist attempt (24h per lock)\n` +
         `• 🧲 <code>horseshoe</code> - +15% luck bonus on grinding (30m per horseshoe)\n` +
         `• 🍎 <code>apple</code> - Protect items from loss on death (24h per apple)\n` +
-        `• 💣 <code>coinbomb</code> - Drop 10k–50k coins in chat for first 3 clickers!`,
+        `• 💣 <code>coinbomb</code> - Drop 15k–50k coins per grab for first 3 clickers!\n` +
+        `• 🎈 <code>gtkcondom</code> - Immediately gain +10 Levels!`,
         { parse_mode: 'HTML' }
       );
     }
@@ -131,58 +133,78 @@ export const use = {
     const prefix = parts[0];
     const subAction = parts[1];
 
-    // 1. Handle Coin Bomb communal button
-    if (prefix === 'coinbomb_claim' || (prefix === 'use' && subAction === 'bomb')) {
-      const bombId = prefix === 'coinbomb_claim' ? parts[1] : parts[2];
+    // 1. Handle Coin Bomb communal grab button (coinbomb:grab)
+    if (prefix === 'coinbomb' && subAction === 'grab') {
+      const msgId = ctx.callbackQuery.message?.message_id;
+      const state = global.activeCoinBombs.get(msgId);
+
+      if (!state) {
+        return ctx.answerCallbackQuery({ text: 'Too late! All coins were grabbed or this bomb expired.', show_alert: true });
+      }
+
       const clickerId = ctx.from.id;
-      const clickerName = ctx.from.first_name || 'Player';
+      const clickerName = ctx.from.username ? `@${ctx.from.username}` : (ctx.from.first_name || 'Player');
 
-      const bomb = activeCoinBombs.get(bombId);
-      if (!bomb) {
-        return ctx.answerCallbackQuery({ text: 'This coin bomb has already expired or finished!', show_alert: true });
+      if (state.claimedBy.has(clickerId)) {
+        return ctx.answerCallbackQuery({ text: 'You already grabbed coins from this bomb!', show_alert: true });
       }
 
-      const alreadyClaimed = bomb.claimed.some(c => c.userId === clickerId);
-      if (alreadyClaimed) {
-        return ctx.answerCallbackQuery({ text: 'You already snatched a bag of coins!', show_alert: true });
+      if (state.claimedBy.size >= 3) {
+        return ctx.answerCallbackQuery({ text: 'Too late! All coins were grabbed.', show_alert: true });
       }
 
-      const claimAmount = Math.floor(bomb.totalCoins / 3);
-      await userRepo.getOrInitUser(clickerId, ctx.from.username, clickerName);
-      await userRepo.updateCoins(clickerId, {
-        walletDelta: claimAmount,
-        sourceCommand: '/use coinbomb',
-        details: `Snatched slice of Coin Bomb dropped by ${bomb.creatorName}`
-      });
-
-      bomb.claimed.push({
+      // Register claimer synchronously before awaiting DB to eliminate concurrent race conditions
+      state.claimedBy.add(clickerId);
+      const reward = randomBetween(15000, 50000);
+      state.rewards.push({
         userId: clickerId,
         name: clickerName,
-        amount: claimAmount
+        amount: reward
       });
 
-      const claimedCount = bomb.claimed.length;
+      await userRepo.getOrInitUser(clickerId, ctx.from.username, ctx.from.first_name);
+      await userRepo.updateCoins(clickerId, {
+        walletDelta: reward,
+        sourceCommand: '/use coinbomb',
+        details: `Grabbed coins from Coin Bomb dropped by ${state.ownerName}`
+      });
+
+      const claimedCount = state.claimedBy.size;
 
       if (claimedCount < 3) {
-        const keyboard = new InlineKeyboard()
-          .text(`💰 Grab Coins! (${claimedCount}/3)`, `use:bomb:${bombId}:shared`);
+        const progressLines = state.rewards
+          .map((r, idx) => `${idx + 1}. <b>${sanitizeHtml(r.name)}</b> grabbed <b>${formatCoins(r.amount)}</b>!`)
+          .join('\n');
 
-        await ctx.editMessageReplyMarkup({ reply_markup: keyboard }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: `💰 Snatched +${formatCoins(claimAmount)}!`, show_alert: true });
+        const updatedText = `💣 <b>COIN BOMB DETONATED!</b> 💣\n` +
+          `<b>${sanitizeHtml(state.ownerName)}</b> tossed a live <b>Coin Bomb</b> into the chat!\n\n` +
+          `First <b>3 players</b> to grab win 🪙 15,000–50,000 each!\n\n` +
+          `<b>Grabbed so far (${claimedCount}/3):</b>\n${progressLines}`;
+
+        const keyboard = new InlineKeyboard()
+          .text(`💰 Grab Coins! (${claimedCount}/3)`, 'coinbomb:grab');
+
+        await ctx.editMessageText(updatedText, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        }).catch(() => {});
+
+        return ctx.answerCallbackQuery({ text: `💰 You grabbed +${formatCoins(reward)}!`, show_alert: true });
       }
 
-      activeCoinBombs.delete(bombId);
+      // Reached 3/3 claimers: remove button, show all 3 winners, and clean up global map
+      global.activeCoinBombs.delete(msgId);
 
-      let summaryText = `💥 <b>COIN BOMB FULLY LOOTED!</b> 💥\n` +
-        `Tossed by: <b>${sanitizeHtml(bomb.creatorName)}</b>\n\n` +
-        `<b>Winners:</b>\n`;
+      const winnerLines = state.rewards
+        .map((r, idx) => `${idx + 1}. <b>${sanitizeHtml(r.name)}</b> grabbed <b>${formatCoins(r.amount)}</b>!`)
+        .join('\n');
 
-      bomb.claimed.forEach((c, idx) => {
-        summaryText += `${idx + 1}. <b>${sanitizeHtml(c.name)}</b> snatched <b>${formatCoins(c.amount)}</b>!\n`;
-      });
+      const summaryText = `💥 <b>COIN BOMB FULLY LOOTED! (3/3)</b> 💥\n` +
+        `Tossed by: <b>${sanitizeHtml(state.ownerName)}</b>\n\n` +
+        `<b>Winners:</b>\n${winnerLines}`;
 
       await ctx.editMessageText(summaryText, { parse_mode: 'HTML' }).catch(() => {});
-      return ctx.answerCallbackQuery({ text: `💰 Snatched the last bag (+${formatCoins(claimAmount)})!`, show_alert: true });
+      return ctx.answerCallbackQuery({ text: `💰 Final grab! +${formatCoins(reward)}!`, show_alert: true });
     }
 
     // 2. Confirmation callbacks (use:yes:<item_id>:<qty>:<uid> / use:no:<uid>)
@@ -244,32 +266,50 @@ export const use = {
         }
 
         await inventoryRepo.removeItem(targetUserId, 'coinbomb', 1);
-        const bombId = `b_${Date.now()}_${targetUserId}`;
-        const totalCoins = randomBetween(15000, 45000);
 
-        activeCoinBombs.set(bombId, {
-          creatorId: targetUserId,
-          creatorName: ctx.from.first_name || 'Player',
-          totalCoins,
-          claimed: []
+        const ownerName = ctx.from.username ? `@${ctx.from.username}` : (ctx.from.first_name || 'Player');
+        const keyboard = new InlineKeyboard()
+          .text('💰 Grab Coins! (0/3)', 'coinbomb:grab');
+
+        const bombPrompt = `💣 <b>COIN BOMB DETONATED!</b> 💣\n` +
+          `<b>${sanitizeHtml(ownerName)}</b> tossed a live <b>Coin Bomb</b> into the chat!\n\n` +
+          `First <b>3 players</b> to click below grab 🪙 15,000–50,000 each!`;
+
+        // Send a fresh group message (removing confirmation prompt) and key activeCoinBombs by sentMsg.message_id
+        await ctx.deleteMessage().catch(() => {});
+        const sentMsg = await ctx.reply(bombPrompt, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
         });
 
-        const keyboard = new InlineKeyboard()
-          .text('💰 Grab Coins! (0/3)', `use:bomb:${bombId}:shared`);
+        global.activeCoinBombs.set(sentMsg.message_id, {
+          ownerId: targetUserId,
+          ownerName,
+          claimedBy: new Set(),
+          rewards: []
+        });
 
-        await ctx.answerCallbackQuery({ text: '💣 Coin Bomb Detonated!' });
+        return ctx.answerCallbackQuery({ text: '💣 Coin Bomb Detonated!' });
+      }
+
+      // 3. GTK BRAND CONDOM (+10 Levels per item)
+      if (item.id === 'gtkcondom') {
+        await inventoryRepo.removeItem(targetUserId, 'gtkcondom', quantity);
+        const levelsToGain = 10 * quantity;
+        const lvlRes = await addLevels(targetUserId, levelsToGain, '/use gtkcondom');
+
+        await ctx.answerCallbackQuery({ text: `🎈 Gained +${levelsToGain} Levels!` });
         return ctx.editMessageText(
-          `💣 <b>COIN BOMB DETONATED!</b> 💣\n` +
-          `<b>${sanitizeHtml(ctx.from.first_name)}</b> tossed a live <b>Coin Bomb</b> into the chat!\n\n` +
-          `A shower of <b>${formatCoins(totalCoins)}</b> is falling! The first <b>3 people</b> to click the button grab a slice of the cash!`,
-          {
-            parse_mode: 'HTML',
-            reply_markup: keyboard
-          }
+          `🎈 <b>ULTIMATE PROTECTION ACTIVATED!</b>\n` +
+          `You used <b>${quantity.toLocaleString('en-US')}x GTK Brand Condom</b> and instantly surged <b>+${levelsToGain} Levels</b>!\n\n` +
+          `⭐ <b>Level:</b> ${lvlRes.oldLevel} ➜ <b>${lvlRes.newLevel}</b>\n` +
+          `🪙 <b>Level-Up Bonus:</b> +${formatCoins(lvlRes.totalCoinsRewarded)}\n` +
+          `🏛️ <b>Bank Capacity Added:</b> +${lvlRes.totalBankCapacityAdded.toLocaleString('en-US')}`,
+          { parse_mode: 'HTML' }
         ).catch(() => {});
       }
 
-      // 3. VAULT LOCK
+      // 4. VAULT LOCK
       if (item.id === 'vaultlock') {
         await inventoryRepo.removeItem(targetUserId, 'vaultlock', quantity);
         const addedSeconds = 86400 * quantity;
@@ -284,7 +324,7 @@ export const use = {
         ).catch(() => {});
       }
 
-      // 4. PADLOCK
+      // 5. PADLOCK
       if (item.id === 'padlock') {
         await inventoryRepo.removeItem(targetUserId, 'padlock', quantity);
         const addedSeconds = 86400 * quantity;
@@ -301,7 +341,7 @@ export const use = {
         ).catch(() => {});
       }
 
-      // 5. LANDMINE
+      // 6. LANDMINE
       if (item.id === 'landmine') {
         await inventoryRepo.removeItem(targetUserId, 'landmine', quantity);
         const addedSeconds = 86400 * quantity;
@@ -318,7 +358,7 @@ export const use = {
         ).catch(() => {});
       }
 
-      // 6. LUCKY HORSESHOE
+      // 7. LUCKY HORSESHOE
       if (item.id === 'horseshoe') {
         await inventoryRepo.removeItem(targetUserId, 'horseshoe', quantity);
         const addedSeconds = 1800 * quantity;
@@ -335,7 +375,7 @@ export const use = {
         ).catch(() => {});
       }
 
-      // 7. APPLE
+      // 8. APPLE
       if (item.id === 'apple') {
         await inventoryRepo.removeItem(targetUserId, 'apple', quantity);
         const addedSeconds = 86400 * quantity;
