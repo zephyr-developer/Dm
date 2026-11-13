@@ -82,6 +82,28 @@ export const userRepo = {
     return null;
   },
 
+  async setEquippedTitle(userId, title) {
+    const cleanTitle = String(title || 'Newbie').trim().slice(0, 64) || 'Newbie';
+    const res = await query(
+      `UPDATE users SET equipped_title = $1, updated_at = NOW() WHERE user_id = $2 RETURNING *;`,
+      [cleanTitle, userId]
+    );
+    return res.rows[0] || null;
+  },
+
+  async setCustomTitle(userId, customTitle, timestamp = Date.now()) {
+    const cleanTitle = String(customTitle || '').trim().slice(0, 64);
+    const ts = Math.floor(Number(timestamp || Date.now()));
+    const res = await query(
+      `UPDATE users
+       SET custom_title = $1, equipped_title = $2, last_custom_title_at = $3, updated_at = NOW()
+       WHERE user_id = $4
+       RETURNING *;`,
+      [cleanTitle, cleanTitle, ts, userId]
+    );
+    return res.rows[0] || null;
+  },
+
   /**
    * Centralized coin movement handler with automatic currency logging and log pruning.
    * Runs in an atomic PostgreSQL transaction with overflow protection and anti-cheat checks.

@@ -5,11 +5,12 @@ import { isOwner } from '../../middlewares/ownerGuard.js';
 import { items } from '../../config/items.js';
 import { formatCoins, progressBar, sanitizeHtml } from '../../utils/formatters.js';
 import { resolveTargetUser } from '../../utils/targetResolver.js';
+import { resolveEffectiveTitle } from '../../utils/titleEngine.js';
 
-async function calculateNetWorth(user) {
+async function calculateNetWorth(user, userItems = null) {
   if (!user) return 0;
-  const userItems = await inventoryRepo.getUserInventory(user.user_id);
-  const inventoryValue = userItems.reduce((acc, entry) => {
+  const itemsList = userItems !== null ? userItems : await inventoryRepo.getUserInventory(user.user_id);
+  const inventoryValue = itemsList.reduce((acc, entry) => {
     const item = items[entry.item_id];
     return acc + (item ? item.sellPrice * entry.quantity : 0);
   }, 0);
@@ -17,7 +18,10 @@ async function calculateNetWorth(user) {
 }
 
 async function buildBalanceCard(targetUser, viewerId, viewerIsOwner = false) {
-  const netWorth = await calculateNetWorth(targetUser);
+  const userItems = await inventoryRepo.getUserInventory(targetUser.user_id);
+  const netWorth = await calculateNetWorth(targetUser, userItems);
+  const effectiveTitle = await resolveEffectiveTitle(targetUser, userItems, { syncFallback: true });
+
   const wallet = Number(targetUser.wallet || 0);
   const bank = Number(targetUser.bank || 0);
   const bankMax = Number(targetUser.bank_max || 5000);
@@ -32,7 +36,8 @@ async function buildBalanceCard(targetUser, viewerId, viewerIsOwner = false) {
     : sanitizeHtml(targetUser.first_name || 'Player');
 
   const card = `💰 <b>${targetHandle}'s Balance</b>${premiumBadge}\n` +
-    `👤 <b>Holder:</b> ${sanitizeHtml(targetUser.first_name)}\n\n` +
+    `👤 <b>Holder:</b> ${sanitizeHtml(targetUser.first_name)}\n` +
+    `🏷️ <b>Title:</b> 「 ${sanitizeHtml(effectiveTitle)} 」\n\n` +
     `👛 <b>Wallet:</b> ${formatCoins(wallet)}\n` +
     `🏦 <b>Bank:</b> ${formatCoins(bank)} / ${formatCoins(bankMax)} (<b>${bankPercent}%</b>)\n` +
     `📊 <b>Bank Space:</b> ${bankBar}\n` +

@@ -7,6 +7,7 @@ import { getXpProgress } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, formatTime, progressBar, sanitizeHtml } from '../../utils/formatters.js';
 import { resolveTargetUser } from '../../utils/targetResolver.js';
+import { resolveEffectiveTitle } from '../../utils/titleEngine.js';
 
 async function buildProfileCard(targetUserId, viewerId = targetUserId) {
   const user = await userRepo.getUser(targetUserId);
@@ -17,6 +18,7 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
   const currentJob = getJob(user.job_id);
   const activeBuffs = await inventoryRepo.getActiveBuffs(targetUserId);
   const luckBreakdown = await getLuckBreakdown(targetUserId);
+  const effectiveTitle = await resolveEffectiveTitle(user, null, { syncFallback: true });
 
   const isPrem = await userRepo.isPremium(targetUserId);
   const premRemaining = await userRepo.getPremiumRemaining(targetUserId);
@@ -39,6 +41,7 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
 
   const card = `📜 <b>Player Profile: ${sanitizeHtml(user.first_name)}</b>\n` +
     (user.username ? `👤 <i>@${sanitizeHtml(user.username)}</i>\n` : '') +
+    `🏷️ <b>Title:</b> 「 ${sanitizeHtml(effectiveTitle)} 」\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
     premiumBadge +
     `⭐ <b>Level:</b> ${user.level} (Prestige: <b>Tier ${user.prestige}</b>)\n` +

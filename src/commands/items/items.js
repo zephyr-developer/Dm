@@ -30,7 +30,7 @@ export const items = {
         `• <b>Defense &amp; Utility:</b> <code>lifesaver</code>, <code>padlock</code>, <code>landmine</code>, <code>vaultlock</code>, <code>banknote</code>, <code>horseshoe</code>, <code>apple</code>\n` +
         `• <b>Tickets &amp; Fun:</b> <code>adventureticket</code>, <code>coinbomb</code>, <code>ducttape</code>\n` +
         `• <b>Rare Collectibles:</b> <code>pepecoin</code>, <code>pepetrophy</code>, <code>dragon</code>, <code>kraken</code>\n` +
-        `• <b>Limited Exclusives:</b> <code>zyloveletter</code>, <code>mjnecklace</code>, <code>gtkcondom</code>\n\n` +
+        `• <b>Limited Exclusives:</b> <code>zyloveletter</code>, <code>mjnecklace</code>, <code>gtkcondom</code>, <code>owntitle</code>\n\n` +
         `💡 <i>Tip: Shortcuts like <code>/items bn</code>, <code>/items ls</code>, or <code>/items trophy</code> also work!</i>`,
         { parse_mode: 'HTML' }
       );
@@ -68,7 +68,11 @@ export const items = {
     if (item.stockLimit && item.stockLimit > 0) {
       const stock = await shopStockRepo.getItemStock(item.id);
       const resetInSec = Math.max(1, Math.ceil((stock.nextResetAt - Date.now()) / 1000));
-      const periodLabel = stock.stockPeriod === 'weekly' ? 'Weekly' : 'Daily';
+      const periodLabel = stock.stockPeriod === 'weekly'
+        ? 'Weekly'
+        : stock.stockPeriod === '2h'
+          ? '2-Hour'
+          : 'Daily';
       const stockStatus = stock.currentStock > 0
         ? `<b>${stock.currentStock}/${stock.stockLimit}</b> left`
         : `<b>0/${stock.stockLimit}</b> (Sold Out)`;

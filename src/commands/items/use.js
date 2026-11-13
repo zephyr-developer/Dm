@@ -4,8 +4,11 @@ import inventoryRepo from '../../database/inventoryRepo.js';
 import { addLevels } from '../../utils/levelEngine.js';
 import { findItem, getItem } from '../../config/items.js';
 import { formatCoins, formatTime, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
+import { createConfirmation, consumeConfirmation, deleteConfirmation, getConfirmation } from '../../utils/confirmations.js';
 
 global.activeCoinBombs = global.activeCoinBombs || new Map();
+
+const CUSTOM_TITLE_COOLDOWN_MS = 86_400_000; // 24 hours
 
 const USABLE_ITEM_IDS = new Set([
   'banknote',
@@ -15,7 +18,8 @@ const USABLE_ITEM_IDS = new Set([
   'horseshoe',
   'apple',
   'coinbomb',
-  'gtkcondom'
+  'gtkcondom',
+  'owntitle'
 ]);
 
 export const use = {
@@ -46,12 +50,78 @@ export const use = {
         `• 🧲 <code>horseshoe</code> - +15% luck bonus on grinding (30m per horseshoe)\n` +
         `• 🍎 <code>apple</code> - Protect items from loss on death (24h per apple)\n` +
         `• 💣 <code>coinbomb</code> - Drop 15k–50k coins per grab for first 3 clickers!\n` +
-        `• 🎈 <code>gtkcondom</code> - Immediately gain +10 Levels!`,
+        `• 🎈 <code>gtkcondom</code> - Immediately gain +10 Levels!\n` +
+        `• 🏷️ <code>owntitle &lt;text&gt;</code> - Unlock &amp; equip your own custom profile title!`,
         { parse_mode: 'HTML' }
       );
     }
 
     const words = rawInput.split(/\s+/);
+    const firstWordMatch = findItem(words[0]);
+    const twoWordMatch = words.length >= 2 ? findItem(`${words[0]} ${words[1]}`) : null;
+
+    // Special handling: /use owntitle <custom title>
+    if (firstWordMatch?.id === 'owntitle' || twoWordMatch?.id === 'owntitle') {
+      const prefixLen = firstWordMatch?.id === 'owntitle'
+        ? words[0].length
+        : rawInput.toLowerCase().indexOf(words[1].toLowerCase()) + words[1].length;
+      const customTitleText = rawInput.slice(prefixLen).trim();
+
+      const ownedTitleItem = await inventoryRepo.getItem(userId, 'owntitle');
+      if (ownedTitleItem <= 0) {
+        return ctx.reply("❌ You don't own any 🏷️ <b>Own Title</b> item.", { parse_mode: 'HTML' });
+      }
+
+      if (!customTitleText) {
+        return ctx.reply(
+          '❌ Please specify the custom title you want! Usage: <code>/use owntitle &lt;your custom title&gt;</code> (Max 30 characters)',
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      if (/[\r\n]/.test(customTitleText)) {
+        return ctx.reply('❌ Custom titles cannot contain line breaks!', { parse_mode: 'HTML' });
+      }
+
+      if (customTitleText.length < 2 || customTitleText.length > 30) {
+        return ctx.reply(
+          `❌ Custom title must be between <b>2 and 30 characters</b> long (yours is ${customTitleText.length} characters).`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      const freshUser = await userRepo.getUser(userId);
+      const lastChange = Number(freshUser?.last_custom_title_at || 0);
+      const elapsed = Date.now() - lastChange;
+      if (lastChange > 0 && elapsed < CUSTOM_TITLE_COOLDOWN_MS) {
+        const remainingSec = Math.max(1, Math.ceil((CUSTOM_TITLE_COOLDOWN_MS - elapsed) / 1000));
+        return ctx.reply(
+          `⏳ <b>Custom Title Cooldown!</b> You can only change your custom title once every <b>24 hours</b>. Please wait <b>${formatTime(remainingSec)}</b> before changing it again!`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      const token = createConfirmation('ot', {
+        callerId: userId,
+        customTitleText
+      });
+
+      const keyboard = new InlineKeyboard()
+        .text('❌ Cancel', `use:ot_no:${token}:${userId}`)
+        .text('✅ Confirm', `use:ot_yes:${token}:${userId}`);
+
+      return ctx.reply(
+        `🏷️ <b>Confirm Custom Title</b>\n` +
+        `Are you sure you want to consume <b>1x 🏷️ Own Title</b> to set your custom title to:\n` +
+        `👉 <b>「 ${sanitizeHtml(customTitleText)} 」</b>\n\n` +
+        `<i>(Note: Once changed, you must wait 24 hours before you can change your custom title again!)</i>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        }
+      );
+    }
+
     let quantityStr = null;
     let itemQuery = '';
 
@@ -207,13 +277,58 @@ export const use = {
       return ctx.answerCallbackQuery({ text: `💰 Final grab! +${formatCoins(reward)}!`, show_alert: true });
     }
 
-    // 2. Confirmation callbacks (use:yes:<item_id>:<qty>:<uid> / use:no:<uid>)
+    // 2. Confirmation callbacks (use:yes:<item_id>:<qty>:<uid> / use:no:<uid> / use:ot_yes:<token>:<uid> / use:ot_no:<token>:<uid>)
     const targetUserId = Number(parts[parts.length - 1]);
     if (ctx.from.id !== targetUserId) {
       return ctx.answerCallbackQuery({
         text: "🚫 This isn't your transaction!",
         show_alert: true
       });
+    }
+
+    if (subAction === 'ot_no') {
+      const token = parts[2];
+      deleteConfirmation(token);
+      await ctx.answerCallbackQuery({ text: 'Custom title cancelled.' });
+      return ctx.editMessageText('❌ Custom title change cancelled.', { parse_mode: 'HTML' }).catch(() => {});
+    }
+
+    if (subAction === 'ot_yes') {
+      const token = parts[2];
+      const pending = getConfirmation(token);
+      if (!pending || pending.callerId !== targetUserId) {
+        await ctx.answerCallbackQuery({ text: 'Confirmation expired!', show_alert: true });
+        return ctx.editMessageText('⏳ This custom title confirmation has expired. Please run <code>/use owntitle &lt;title&gt;</code> again.', { parse_mode: 'HTML' }).catch(() => {});
+      }
+
+      consumeConfirmation(token);
+
+      const owned = await inventoryRepo.getItem(targetUserId, 'owntitle');
+      if (owned < 1) {
+        await ctx.answerCallbackQuery({ text: 'You no longer own an Own Title item!', show_alert: true });
+        return ctx.editMessageText('❌ <b>Action Failed:</b> You no longer own <b>1x 🏷️ Own Title</b>.', { parse_mode: 'HTML' }).catch(() => {});
+      }
+
+      const freshUser = await userRepo.getUser(targetUserId);
+      const lastChange = Number(freshUser?.last_custom_title_at || 0);
+      const elapsed = Date.now() - lastChange;
+      if (lastChange > 0 && elapsed < CUSTOM_TITLE_COOLDOWN_MS) {
+        const remainingSec = Math.max(1, Math.ceil((CUSTOM_TITLE_COOLDOWN_MS - elapsed) / 1000));
+        await ctx.answerCallbackQuery({ text: 'Custom title cooldown active!', show_alert: true });
+        return ctx.editMessageText(
+          `⏳ <b>Custom Title Cooldown!</b> You must wait <b>${formatTime(remainingSec)}</b> before changing your custom title again.`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+
+      await inventoryRepo.removeItem(targetUserId, 'owntitle', 1);
+      await userRepo.setCustomTitle(targetUserId, pending.customTitleText, Date.now());
+
+      await ctx.answerCallbackQuery({ text: '🏷️ Custom title unlocked!' });
+      return ctx.editMessageText(
+        `✨ <b>NEW CUSTOM TITLE UNLOCKED!</b> Your profile title is now set to <b>「 ${sanitizeHtml(pending.customTitleText)} 」</b>!`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
     }
 
     if (subAction === 'no') {

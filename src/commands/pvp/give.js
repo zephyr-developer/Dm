@@ -151,6 +151,23 @@ export const give = {
       );
     }
 
+    if (item.maxOwn === 1) {
+      const targetOwnedQty = await inventoryRepo.getItem(target.user_id, item.id);
+      const targetHandle = target.username ? `@${sanitizeHtml(target.username)}` : sanitizeHtml(target.first_name);
+      if (targetOwnedQty >= 1) {
+        return ctx.reply(
+          `❌ <b>${targetHandle}</b> already holds <b>${item.emoji} ${sanitizeHtml(item.name)}</b>! Each player can only have <b>1</b> at a time.`,
+          { parse_mode: 'HTML' }
+        );
+      }
+      if (quantity > 1) {
+        return ctx.reply(
+          `❌ You can only give <b>1x ${item.emoji} ${sanitizeHtml(item.name)}</b> — each player can only have <b>1</b> at a time!`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    }
+
     const token = createConfirmation('gv', {
       kind: 'item',
       callerId,
@@ -279,8 +296,21 @@ export const give = {
     }
 
     // ==========================================
-    // EXECUTE ITEM TRANSFER (ANTI-DOUBLE-SPEND)
+    // EXECUTE ITEM TRANSFER (ANTI-DOUBLE-SPEND + MAX-OWN CHECK)
     // ==========================================
+    const itemMeta = findItem(pending.itemId);
+    if (itemMeta?.maxOwn === 1) {
+      const freshTargetOwned = await inventoryRepo.getItem(pending.targetId, pending.itemId);
+      const targetHandle = freshTarget.username ? `@${sanitizeHtml(freshTarget.username)}` : sanitizeHtml(freshTarget.first_name);
+      if (freshTargetOwned >= 1 || pending.quantity > 1) {
+        await ctx.editMessageText(
+          `❌ <b>${targetHandle}</b> already holds <b>${pending.itemEmoji} ${sanitizeHtml(pending.itemName)}</b>! Each player can only have <b>1</b> at a time.`,
+          { parse_mode: 'HTML' }
+        );
+        return ctx.answerCallbackQuery({ text: 'Target ownership limit reached!' }).catch(() => {});
+      }
+    }
+
     const freshOwned = await inventoryRepo.getItem(pending.callerId, pending.itemId);
     if (freshOwned < pending.quantity) {
       await ctx.editMessageText(

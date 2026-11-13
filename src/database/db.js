@@ -117,6 +117,9 @@ export async function initDatabase() {
         flagged_amount BIGINT DEFAULT 0,
         last_appeal_at BIGINT DEFAULT 0,
         owner_chat_id BIGINT DEFAULT NULL,
+        equipped_title VARCHAR(64) DEFAULT 'Newbie',
+        custom_title VARCHAR(64) DEFAULT NULL,
+        last_custom_title_at BIGINT DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -207,6 +210,9 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS flagged_amount BIGINT DEFAULT 0;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_appeal_at BIGINT DEFAULT 0;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS owner_chat_id BIGINT DEFAULT NULL;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS equipped_title VARCHAR(64) DEFAULT 'Newbie';`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_title VARCHAR(64) DEFAULT NULL;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_custom_title_at BIGINT DEFAULT 0;`);
 
     await client.query('COMMIT');
     console.log('✅ PostgreSQL schemas initialized and verified (Zero-Drop policy enforced).');
@@ -286,6 +292,9 @@ function executeMemoryQuery(text, params = []) {
         flagged_amount: 0,
         last_appeal_at: 0,
         owner_chat_id: null,
+        equipped_title: 'Newbie',
+        custom_title: null,
+        last_custom_title_at: 0,
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -328,6 +337,30 @@ function executeMemoryQuery(text, params = []) {
       const u = memoryDb.users.get(userId);
       if (u) {
         u.owner_chat_id = chatId;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET EQUIPPED_TITLE = $1')) {
+      const title = String(params[0] || 'Newbie');
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.equipped_title = title;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET CUSTOM_TITLE = $1, EQUIPPED_TITLE = $2, LAST_CUSTOM_TITLE_AT = $3')) {
+      const customTitle = String(params[0]);
+      const equippedTitle = String(params[1]);
+      const ts = Number(params[2] || Date.now());
+      const userId = Number(params[3]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.custom_title = customTitle;
+        u.equipped_title = equippedTitle;
+        u.last_custom_title_at = ts;
         u.updated_at = new Date();
         return { rows: [{ ...u }], rowCount: 1 };
       }

@@ -83,6 +83,9 @@ export const buy = {
       if (stockInfo && quantity > stockInfo.currentStock) {
         quantity = stockInfo.currentStock;
       }
+      if (item.maxOwn === 1 && quantity > 1) {
+        quantity = 1;
+      }
       if (quantity <= 0) {
         return ctx.reply(
           `💸 <b>Insufficient Funds!</b>\n` +
@@ -97,6 +100,22 @@ export const buy = {
         return ctx.reply('❌ Quantity must be at least 1.');
       }
       quantity = parsed;
+    }
+
+    if (item.maxOwn === 1) {
+      const ownedQty = await inventoryRepo.getItem(userId, item.id);
+      if (ownedQty >= 1) {
+        return ctx.reply(
+          `❌ <b>OWNERSHIP LIMIT REACHED!</b> You already own <b>${ownedQty}x ${item.emoji} ${item.name}</b>. Each player can only hold <b>1</b> of this item at a time!`,
+          { parse_mode: 'HTML' }
+        );
+      }
+      if (quantity > 1) {
+        return ctx.reply(
+          `❌ You can only buy <b>1x ${item.emoji} ${item.name}</b> at a time!`,
+          { parse_mode: 'HTML' }
+        );
+      }
     }
 
     if (stockInfo && quantity > stockInfo.currentStock) {
@@ -164,6 +183,25 @@ export const buy = {
       if (!item || !item.buyPrice || isNaN(quantity) || quantity <= 0) {
         await ctx.answerCallbackQuery({ text: 'Invalid purchase details.', show_alert: true });
         return ctx.editMessageText('❌ Transaction failed: Invalid item or quantity.').catch(() => {});
+      }
+
+      // Re-validate strict 1-per-user ownership cap before locking stock or charging coins
+      if (item.maxOwn === 1) {
+        const ownedQty = await inventoryRepo.getItem(targetUserId, item.id);
+        if (ownedQty >= 1) {
+          await ctx.answerCallbackQuery({ text: 'Ownership limit reached!', show_alert: true });
+          return ctx.editMessageText(
+            `❌ <b>OWNERSHIP LIMIT REACHED!</b> You already own <b>${ownedQty}x ${item.emoji} ${item.name}</b>. Each player can only hold <b>1</b> of this item at a time!`,
+            { parse_mode: 'HTML' }
+          ).catch(() => {});
+        }
+        if (quantity > 1) {
+          await ctx.answerCallbackQuery({ text: 'Limit 1x at a time!', show_alert: true });
+          return ctx.editMessageText(
+            `❌ You can only buy <b>1x ${item.emoji} ${item.name}</b> at a time!`,
+            { parse_mode: 'HTML' }
+          ).catch(() => {});
+        }
       }
 
       // Re-validate current wallet balance before executing transaction

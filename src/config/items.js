@@ -287,6 +287,7 @@ export const items = {
     sellPrice: 20,
     type: 'collectible',
     prestigeKeep: true,
+    maxOwn: 1,
     stockLimit: 1,
     stockPeriod: 'weekly',
     description: 'An ultra-rare, heartfelt love letter from ZYuan. Kept after Prestige! (Limited: 1 per week)'
@@ -300,6 +301,7 @@ export const items = {
     sellPrice: 20,
     type: 'collectible',
     prestigeKeep: true,
+    maxOwn: 1,
     stockLimit: 1,
     stockPeriod: 'weekly',
     description: "MJune's dazzling signature necklace. Kept after Prestige! (Limited: 1 per week)"
@@ -313,9 +315,25 @@ export const items = {
     sellPrice: 20,
     type: 'consumable',
     prestigeKeep: true,
+    maxOwn: 1,
     stockLimit: 1,
     stockPeriod: 'daily',
     description: '/use to immediately gain +10 Levels! Kept after Prestige! (Limited: 1 per day)'
+  },
+  owntitle: {
+    id: 'owntitle',
+    name: 'Own Title',
+    emoji: '🏷️',
+    aliases: ['customtitle', 'title', 'mytitle'],
+    buyPrice: 200000000000,
+    sellPrice: 20,
+    type: 'consumable',
+    prestigeKeep: true,
+    maxOwn: 1,
+    stockLimit: 3,
+    stockPeriod: '2h',
+    stockDurationMs: 7200000,
+    description: '/use <custom title> to unlock & equip your own custom profile title! (24h cooldown between custom title changes. Limited: 3 stock every 2 hours. Max 1 held at a time.)'
   }
 };
 

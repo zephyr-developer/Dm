@@ -1,15 +1,28 @@
 import { getClient, query } from './db.js';
 import { getItem, getAllItems } from '../config/items.js';
 
+const TWO_HOURS_MS = 7_200_000;
 const DAILY_MS = 86_400_000;
 const WEEKLY_MS = 604_800_000;
 
-export function getPeriodDurationMs(stockPeriod) {
-  if (stockPeriod === 'weekly') return WEEKLY_MS;
+export function getPeriodDurationMs(stockPeriodOrItem) {
+  if (stockPeriodOrItem && typeof stockPeriodOrItem === 'object') {
+    if (stockPeriodOrItem.stockDurationMs && Number(stockPeriodOrItem.stockDurationMs) > 0) {
+      return Number(stockPeriodOrItem.stockDurationMs);
+    }
+    stockPeriodOrItem = stockPeriodOrItem.stockPeriod;
+  }
+  if (stockPeriodOrItem === 'weekly') return WEEKLY_MS;
+  if (stockPeriodOrItem === '2h') return TWO_HOURS_MS;
   return DAILY_MS;
 }
 
 export const shopStockRepo = {
+  async getStock(itemOrId) {
+    const id = typeof itemOrId === 'string' ? itemOrId : itemOrId?.id;
+    return this.getItemStock(id);
+  },
+
   /**
    * Returns current global stock info for an item, automatically replenishing if the reset window elapsed.
    */
@@ -27,7 +40,7 @@ export const shopStockRepo = {
     }
 
     const now = Date.now();
-    const periodMs = getPeriodDurationMs(item.stockPeriod);
+    const periodMs = getPeriodDurationMs(item);
     const res = await query('SELECT * FROM shop_stock WHERE item_id = $1;', [item.id]);
     let row = res.rows[0];
 
@@ -95,7 +108,7 @@ export const shopStockRepo = {
 
     const client = await getClient();
     const now = Date.now();
-    const periodMs = getPeriodDurationMs(item.stockPeriod);
+    const periodMs = getPeriodDurationMs(item);
 
     try {
       await client.query('BEGIN');
@@ -167,7 +180,7 @@ export const shopStockRepo = {
     const targetStock = customAmount !== null && customAmount !== undefined
       ? Math.max(0, Math.floor(Number(customAmount)))
       : item.stockLimit;
-    const nextResetAt = Date.now() + getPeriodDurationMs(item.stockPeriod);
+    const nextResetAt = Date.now() + getPeriodDurationMs(item);
 
     await query(
       `INSERT INTO shop_stock (item_id, current_stock, next_reset_at)

@@ -32,7 +32,11 @@ async function buildShopPage(userId, page = 1) {
       const stockInfo = stockMap.get(item.id) || await shopStockRepo.getItemStock(item.id);
       stockInfoById.set(item.id, stockInfo);
       const resetInSec = Math.max(1, Math.ceil((stockInfo.nextResetAt - Date.now()) / 1000));
-      const periodTag = stockInfo.stockPeriod === 'weekly' ? 'Weekly' : 'Daily';
+      const periodTag = stockInfo.stockPeriod === 'weekly'
+        ? 'Weekly'
+        : stockInfo.stockPeriod === '2h'
+          ? 'Every 2h'
+          : 'Daily';
       if (stockInfo.currentStock > 0) {
         stockLine = `• 🔥 <b>Global Stock:</b> <b>${stockInfo.currentStock}/${stockInfo.stockLimit}</b> (${periodTag} | Resets in ${formatTime(resetInSec)})\n`;
       } else {
@@ -124,6 +128,16 @@ export const shop = {
 
       if (!item || !item.buyPrice) {
         return ctx.answerCallbackQuery({ text: 'Item not available for purchase.', show_alert: true });
+      }
+
+      if (item.maxOwn === 1) {
+        const ownedQty = await inventoryRepo.getItem(targetUserId, item.id);
+        if (ownedQty >= 1) {
+          return ctx.answerCallbackQuery({
+            text: `❌ Limit reached! You already own 1x ${item.name} (Max 1 per player).`,
+            show_alert: true
+          });
+        }
       }
 
       const user = await userRepo.getUser(targetUserId);

@@ -2,7 +2,7 @@ import shopStockRepo from '../../database/shopStockRepo.js';
 import { findItem, getItem } from '../../config/items.js';
 import { formatTime, sanitizeHtml } from '../../utils/formatters.js';
 
-const LIMITED_ITEM_IDS = ['zyloveletter', 'mjnecklace', 'gtkcondom'];
+const LIMITED_ITEM_IDS = ['zyloveletter', 'mjnecklace', 'gtkcondom', 'owntitle'];
 
 async function buildStockSummary(headline) {
   let msg = `${headline}\n\n<b>📦 Current Limited Shop Stock:</b>\n`;
@@ -39,7 +39,7 @@ export const restock = {
     const rawInput = (ctx.match || '').trim() || ctx.message?.text?.trim().split(/\s+/).slice(1).join(' ').trim() || '';
     const args = rawInput ? rawInput.split(/\s+/).filter(Boolean) : [];
 
-    // /restock or /restock all -> refill all 3 limited items back to full stock
+    // /restock or /restock all -> refill all limited items back to full stock
     if (args.length === 0 || (args.length === 1 && args[0].toLowerCase() === 'all')) {
       await shopStockRepo.restockAllLimited();
       const summary = await buildStockSummary('🔄 <b>GLOBAL SHOP RESTOCKED!</b> All limited items refilled to full stock.');
@@ -67,7 +67,8 @@ export const restock = {
         `Valid limited items:\n` +
         `• <code>zyloveletter</code> (💌 ZYuan's Love Letter)\n` +
         `• <code>mjnecklace</code> (📿 MJune's Necklace)\n` +
-        `• <code>gtkcondom</code> (🎈 GTK Brand Condom)\n\n` +
+        `• <code>gtkcondom</code> (🎈 GTK Brand Condom)\n` +
+        `• <code>owntitle</code> (🏷️ Own Title)\n\n` +
         `Or run <code>/restock all</code> to refill everything.`,
         { parse_mode: 'HTML' }
       );
