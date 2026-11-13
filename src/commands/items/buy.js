@@ -90,10 +90,10 @@ export const buy = {
       );
     }
 
-    // Send confirmation prompt (NO deduction yet)
+    // Send confirmation prompt (NO deduction yet) — Cancel left, Confirm right
     const keyboard = new InlineKeyboard()
-      .text('✅ Confirm', `buy:yes:${item.id}:${quantity}:${userId}`)
-      .text('❌ Cancel', `buy:no:${userId}`);
+      .text('❌ Cancel', `buy:no:${userId}`)
+      .text('✅ Confirm', `buy:yes:${item.id}:${quantity}:${userId}`);
 
     return ctx.reply(
       `🛒 <b>Confirm Shop Purchase</b>\n\n` +

@@ -53,8 +53,8 @@ export const sell = {
       }
 
       const keyboard = new InlineKeyboard()
-        .text('✅ Confirm', `sell:yes:all:0:${userId}`)
-        .text('❌ Cancel', `sell:no:${userId}`);
+        .text('❌ Cancel', `sell:no:${userId}`)
+        .text('✅ Confirm', `sell:yes:all:0:${userId}`);
 
       return ctx.reply(
         `💰 <b>Confirm Bulk Loot Liquidation</b>\n\n` +
@@ -113,8 +113,8 @@ export const sell = {
 
     const totalPayout = item.sellPrice * quantity;
     const keyboard = new InlineKeyboard()
-      .text('✅ Confirm', `sell:yes:${item.id}:${quantity}:${userId}`)
-      .text('❌ Cancel', `sell:no:${userId}`);
+      .text('❌ Cancel', `sell:no:${userId}`)
+      .text('✅ Confirm', `sell:yes:${item.id}:${quantity}:${userId}`);
 
     return ctx.reply(
       `💰 <b>Confirm Pawn Shop Sale</b>\n\n` +

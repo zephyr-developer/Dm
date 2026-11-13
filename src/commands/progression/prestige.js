@@ -65,12 +65,12 @@ async function buildPrestigeCard(userId) {
   const keyboard = new InlineKeyboard();
   if (qualifies) {
     keyboard
-      .text('🔥 CONFIRM PRESTIGE', `prestige:confirm:${userId}`)
-      .text('❌ CANCEL', `prestige:cancel:${userId}`);
+      .text('❌ CANCEL', `prestige:cancel:${userId}`)
+      .text('🔥 CONFIRM PRESTIGE', `prestige:confirm:${userId}`);
   } else {
     keyboard
-      .text('🔒 Requirements Not Met', `prestige:locked:${userId}`)
-      .text('❌ CANCEL', `prestige:cancel:${userId}`);
+      .text('❌ CANCEL', `prestige:cancel:${userId}`)
+      .text('🔒 Requirements Not Met', `prestige:locked:${userId}`);
   }
 
   return { text, keyboard };

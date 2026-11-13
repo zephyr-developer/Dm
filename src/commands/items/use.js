@@ -107,10 +107,10 @@ export const use = {
       }
     }
 
-    // Send confirmation prompt (NO deduction yet)
+    // Send confirmation prompt (NO deduction yet) — Cancel left, Confirm right
     const keyboard = new InlineKeyboard()
-      .text('✅ Confirm', `use:yes:${item.id}:${quantity}:${userId}`)
-      .text('❌ Cancel', `use:no:${userId}`);
+      .text('❌ Cancel', `use:no:${userId}`)
+      .text('✅ Confirm', `use:yes:${item.id}:${quantity}:${userId}`);
 
     return ctx.reply(
       `🎒 <b>Confirm Item Usage</b>\n\n` +

@@ -45,8 +45,8 @@ function buildCraftConfirmation(item, userId) {
   });
 
   const keyboard = new InlineKeyboard()
-    .text('✅ Confirm', `craft:yes:${item.id}:1:${userId}`)
-    .text('❌ Cancel', `craft:no:${userId}`);
+    .text('❌ Cancel', `craft:no:${userId}`)
+    .text('✅ Confirm', `craft:yes:${item.id}:1:${userId}`);
 
   const text = `🔨 <b>Confirm Crafting</b>\n\n` +
     `You are about to forge: <b>1x ${item.emoji} ${item.name}</b>\n\n` +
