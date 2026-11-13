@@ -5,11 +5,13 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import dotenv from 'dotenv';
 import dedupUpdates from './middlewares/dedupUpdates.js';
 import registerUser from './middlewares/registerUser.js';
+import accountGuard from './middlewares/accountGuard.js';
 import heistGuard from './middlewares/heistGuard.js';
 import cooldownRepo from './database/cooldownRepo.js';
 import userRepo from './database/userRepo.js';
 import { isOwner } from './middlewares/ownerGuard.js';
 import { formatTime } from './utils/formatters.js';
+import { setSecurityBot, handleAntiCheatCallback } from './services/antiCheat.js';
 
 dotenv.config();
 
@@ -18,6 +20,7 @@ const __dirname = path.dirname(__filename);
 
 const token = process.env.BOT_TOKEN || 'DUMMY_TOKEN_FOR_SETUP';
 export const bot = new Bot(token);
+setSecurityBot(bot);
 
 // In-memory registry of commands and callback handlers
 export const commands = new Map();
@@ -53,6 +56,7 @@ bot.use(async (ctx, next) => {
 });
 
 bot.use(registerUser);
+bot.use(accountGuard);
 bot.use(heistGuard);
 
 // 24/7 Crash-Proof Error Handler: Catch all grammY / Telegram API errors
@@ -81,6 +85,18 @@ export function checkButtonOwnership(ctx) {
   if (!data) return true;
 
   const parts = data.split(':');
+  // Anti-cheat Owner review buttons (`ac:<action>:<targetUserId>`) are restricted exclusively to @tzhunyuan
+  if (parts[0] === 'ac') {
+    if (!isOwner(ctx)) {
+      ctx.answerCallbackQuery({
+        text: '❌ Unauthorized: Owner security controls only.',
+        show_alert: true
+      }).catch(() => {});
+      return false;
+    }
+    return true;
+  }
+
   // If the callback explicitly marks itself as shared (e.g. coinbomb, heist join), allow all
   if (
     parts.includes('shared') ||
@@ -293,6 +309,17 @@ function registerDefaultCommands() {
 
     const data = ctx.callbackQuery.data;
     const parts = data.split(':');
+
+    if (parts[0] === 'ac') {
+      try {
+        await handleAntiCheatCallback(ctx);
+      } catch (err) {
+        console.error(`[TeleMemer] Error handling anti-cheat callback ${data}:`, err.message);
+        await ctx.answerCallbackQuery({ text: '⚠️ Failed to execute security action.' }).catch(() => {});
+      }
+      return;
+    }
+
     const commandKey = parts[0] === 'coinbomb' || parts[0] === 'coinbomb_claim' ? 'use' : parts[0];
 
     // Check if there is a handler registered for this prefix

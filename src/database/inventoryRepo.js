@@ -53,6 +53,29 @@ export const inventoryRepo = {
     return true;
   },
 
+  async setItem(userId, itemId, exactQuantity) {
+    const qty = Math.max(0, Math.floor(Number(exactQuantity)));
+    if (isNaN(qty)) return false;
+
+    if (qty <= 0) {
+      await query('DELETE FROM inventories WHERE user_id = $1 AND item_id = $2;', [userId, itemId]);
+      return true;
+    }
+
+    const sql = `
+      INSERT INTO inventories (user_id, item_id, quantity)
+      VALUES ($1, $2, $3)
+      ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = EXCLUDED.quantity;
+    `;
+    await query(sql, [userId, itemId, qty]);
+    return true;
+  },
+
+  async clearInventory(userId) {
+    await query('DELETE FROM inventories WHERE user_id = $1;', [userId]);
+    return true;
+  },
+
   async wipeNonCollectibleInventory(userId, collectibleItemIds = []) {
     if (collectibleItemIds.length === 0) {
       await query('DELETE FROM inventories WHERE user_id = $1;', [userId]);

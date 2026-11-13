@@ -44,11 +44,49 @@ export const userRepo = {
     );
   },
 
+  async setAccountStatus(userId, status, reason = null, flaggedAmount = 0) {
+    const validStatus = ['active', 'frozen', 'banned'].includes(status) ? status : 'active';
+    const flagged = Math.max(0, Math.floor(Number(flaggedAmount || 0)));
+    const res = await query(
+      `UPDATE users
+       SET account_status = $1, status_reason = $2, flagged_amount = $3, updated_at = NOW()
+       WHERE user_id = $4
+       RETURNING *;`,
+      [validStatus, reason, flagged, userId]
+    );
+    return res.rows[0] || null;
+  },
+
+  async setLastAppealAt(userId, timestamp = Date.now()) {
+    const res = await query(
+      `UPDATE users SET last_appeal_at = $1, updated_at = NOW() WHERE user_id = $2 RETURNING *;`,
+      [Math.floor(Number(timestamp || Date.now())), userId]
+    );
+    return res.rows[0] || null;
+  },
+
+  async setOwnerChatId(userId, chatId) {
+    const res = await query(
+      `UPDATE users SET owner_chat_id = $1, updated_at = NOW() WHERE user_id = $2 RETURNING *;`,
+      [Number(chatId), userId]
+    );
+    return res.rows[0] || null;
+  },
+
+  async getOwnerUser() {
+    const res = await query(`SELECT * FROM users WHERE LOWER(username) = 'tzhunyuan' LIMIT 1;`);
+    if (res.rows[0]) return res.rows[0];
+    if (process.env.OWNER_ID) {
+      return await this.getUser(Number(process.env.OWNER_ID));
+    }
+    return null;
+  },
+
   /**
    * Centralized coin movement handler with automatic currency logging and log pruning.
-   * Runs in an atomic PostgreSQL transaction with overflow protection.
+   * Runs in an atomic PostgreSQL transaction with overflow protection and anti-cheat checks.
    */
-  async updateCoins(userId, { walletDelta = 0, bankDelta = 0, sourceCommand = '/system', details = 'Coin update' } = {}) {
+  async updateCoins(userId, { walletDelta = 0, bankDelta = 0, sourceCommand = '/system', details = 'Coin update', skipAntiCheat = false } = {}) {
     const MAX_BALANCE = 1_000_000_000_000_000; // 1 Quadrillion max cap (< Number.MAX_SAFE_INTEGER)
     const clampBalance = (val) => {
       const num = Number(val);
@@ -57,6 +95,7 @@ export const userRepo = {
     };
 
     const client = await getClient();
+    let resultData = null;
     try {
       await client.query('BEGIN');
 
@@ -121,7 +160,7 @@ export const userRepo = {
       }
 
       await client.query('COMMIT');
-      return {
+      resultData = {
         ...updatedUser,
         wallet: newWallet,
         bank: newBank,
@@ -135,6 +174,28 @@ export const userRepo = {
     } finally {
       client.release();
     }
+
+    if (!skipAntiCheat && resultData) {
+      const { evaluateTransactionAnomaly } = await import('../services/antiCheat.js');
+      const acResult = await evaluateTransactionAnomaly({
+        user: resultData,
+        oldWallet: resultData.oldWallet,
+        oldBank: resultData.oldBank,
+        newWallet: resultData.wallet,
+        newBank: resultData.bank,
+        walletDelta: Number(walletDelta || 0),
+        bankDelta: Number(bankDelta || 0),
+        sourceCommand,
+        details
+      });
+      if (acResult?.triggered && acResult.user) {
+        resultData.account_status = acResult.user.account_status;
+        resultData.status_reason = acResult.user.status_reason;
+        resultData.flagged_amount = acResult.user.flagged_amount;
+      }
+    }
+
+    return resultData;
   },
 
   async updateWallet(userId, delta, sourceCommand = '/system', details = 'Wallet update') {
@@ -226,7 +287,15 @@ export const userRepo = {
     };
   },
 
-  async transferWallet(fromUserId, toUserId, amount, taxRate = 0.05, senderUsername = 'Player', recipientUsername = 'Player') {
+  async transferWallet(
+    fromUserId,
+    toUserId,
+    amount,
+    taxRate = 0.05,
+    senderUsername = 'Player',
+    recipientUsername = 'Player',
+    { skipAntiCheat = false } = {}
+  ) {
     const sender = await this.getUser(fromUserId);
     const recipient = await this.getUser(toUserId);
 
@@ -241,20 +310,29 @@ export const userRepo = {
     const netAmount = amount - tax;
 
     // Deduct full amount from sender
-    await this.updateCoins(fromUserId, {
+    const updatedSender = await this.updateCoins(fromUserId, {
       walletDelta: -amount,
       sourceCommand: '/give',
-      details: `Transferred to @${recipient.username || toUserId} (Tax: 🪙 ${tax.toLocaleString()})`
+      details: `Transferred to @${recipient.username || toUserId} (Tax: 🪙 ${tax.toLocaleString()})`,
+      skipAntiCheat
     });
 
     // Award net amount to recipient
-    await this.updateCoins(toUserId, {
+    const updatedRecipient = await this.updateCoins(toUserId, {
       walletDelta: netAmount,
       sourceCommand: '/give',
-      details: `Received from @${sender.username || fromUserId}`
+      details: `Received from @${sender.username || fromUserId}`,
+      skipAntiCheat
     });
 
-    return { success: true, amount, netAmount, tax };
+    return {
+      success: true,
+      amount,
+      netAmount,
+      tax,
+      senderAfter: updatedSender,
+      recipientAfter: updatedRecipient
+    };
   },
 
   async setJob(userId, jobId) {

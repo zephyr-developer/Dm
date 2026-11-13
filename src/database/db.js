@@ -112,6 +112,11 @@ export async function initDatabase() {
         passive_mode INT DEFAULT 0,
         premium_until BIGINT DEFAULT 0,
         custom_luck INT DEFAULT 0,
+        account_status VARCHAR(20) DEFAULT 'active',
+        status_reason TEXT DEFAULT NULL,
+        flagged_amount BIGINT DEFAULT 0,
+        last_appeal_at BIGINT DEFAULT 0,
+        owner_chat_id BIGINT DEFAULT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -195,17 +200,13 @@ export async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_currency_logs_user_time ON currency_logs(user_id, created_at DESC);`);
 
     // Auto-migration checks for backwards-compatibility
-    await client.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'premium_until') THEN
-          ALTER TABLE users ADD COLUMN premium_until BIGINT DEFAULT 0;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'custom_luck') THEN
-          ALTER TABLE users ADD COLUMN custom_luck INT DEFAULT 0;
-        END IF;
-      END $$;
-    `);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until BIGINT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_luck INT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS account_status VARCHAR(20) DEFAULT 'active';`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status_reason TEXT DEFAULT NULL;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS flagged_amount BIGINT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_appeal_at BIGINT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS owner_chat_id BIGINT DEFAULT NULL;`);
 
     await client.query('COMMIT');
     console.log('✅ PostgreSQL schemas initialized and verified (Zero-Drop policy enforced).');
@@ -235,6 +236,15 @@ function executeMemoryQuery(text, params = []) {
     const userId = Number(params[0]);
     const u = memoryDb.users.get(userId);
     return { rows: u ? [{ ...u }] : [], rowCount: u ? 1 : 0 };
+  }
+
+  if (norm.startsWith("SELECT * FROM USERS WHERE LOWER(USERNAME) = 'TZHUNYUAN'") || norm.includes("LOWER(USERNAME) = 'TZHUNYUAN'")) {
+    for (const u of memoryDb.users.values()) {
+      if (u.username && u.username.toLowerCase() === 'tzhunyuan') {
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   if (norm.startsWith('SELECT * FROM USERS WHERE LOWER(USERNAME) = LOWER($1)')) {
@@ -271,6 +281,11 @@ function executeMemoryQuery(text, params = []) {
         passive_mode: 0,
         premium_until: 0,
         custom_luck: 0,
+        account_status: 'active',
+        status_reason: null,
+        flagged_amount: 0,
+        last_appeal_at: 0,
+        owner_chat_id: null,
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -283,6 +298,40 @@ function executeMemoryQuery(text, params = []) {
   }
 
   if (norm.startsWith('UPDATE USERS')) {
+    if (norm.includes('SET ACCOUNT_STATUS = $1, STATUS_REASON = $2, FLAGGED_AMOUNT = $3')) {
+      const status = String(params[0]);
+      const reason = params[1] !== undefined ? params[1] : null;
+      const flaggedAmount = Number(params[2] || 0);
+      const userId = Number(params[3]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.account_status = status;
+        u.status_reason = reason;
+        u.flagged_amount = flaggedAmount;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET LAST_APPEAL_AT = $1')) {
+      const ts = Number(params[0] || 0);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.last_appeal_at = ts;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET OWNER_CHAT_ID = $1')) {
+      const chatId = Number(params[0]);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.owner_chat_id = chatId;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
     if (norm.includes('SET WALLET = $1, BANK = $2')) {
       const newWallet = Number(params[0]);
       const newBank = Number(params[1]);
@@ -446,7 +495,11 @@ function executeMemoryQuery(text, params = []) {
     const qty = Number(params[2]);
     const key = `${userId}:${itemId}`;
     const current = memoryDb.inventories.get(key) || { user_id: userId, item_id: itemId, quantity: 0 };
-    current.quantity += qty;
+    if (norm.includes('DO UPDATE SET QUANTITY = EXCLUDED.QUANTITY') || norm.includes('DO UPDATE SET QUANTITY = $3')) {
+      current.quantity = qty;
+    } else {
+      current.quantity += qty;
+    }
     if (current.quantity <= 0) {
       memoryDb.inventories.delete(key);
     } else {
@@ -488,6 +541,24 @@ function executeMemoryQuery(text, params = []) {
       }
     }
     return { rows: [], rowCount: 1 };
+  }
+
+  if (norm.startsWith('UPDATE INVENTORIES') && norm.includes('QUANTITY = QUANTITY - $1')) {
+    const qty = Number(params[0]);
+    const userId = Number(params[1]);
+    const itemId = String(params[2]);
+    const key = `${userId}:${itemId}`;
+    const current = memoryDb.inventories.get(key);
+    if (current) {
+      current.quantity = Math.max(0, current.quantity - qty);
+      if (current.quantity <= 0) {
+        memoryDb.inventories.delete(key);
+      } else {
+        memoryDb.inventories.set(key, current);
+      }
+      return { rows: [{ ...current }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
   }
 
   // 4. Cooldowns
