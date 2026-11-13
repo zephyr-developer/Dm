@@ -156,6 +156,46 @@ export const shopStockRepo = {
     } finally {
       client.release();
     }
+  },
+
+  async restockItem(itemId, customAmount = null) {
+    const item = getItem(itemId);
+    if (!item || !item.stockLimit) {
+      return null;
+    }
+
+    const targetStock = customAmount !== null && customAmount !== undefined
+      ? Math.max(0, Math.floor(Number(customAmount)))
+      : item.stockLimit;
+    const nextResetAt = Date.now() + getPeriodDurationMs(item.stockPeriod);
+
+    await query(
+      `INSERT INTO shop_stock (item_id, current_stock, next_reset_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (item_id) DO UPDATE SET
+         current_stock = EXCLUDED.current_stock,
+         next_reset_at = EXCLUDED.next_reset_at;`,
+      [item.id, targetStock, nextResetAt]
+    );
+
+    return {
+      limited: true,
+      itemId: item.id,
+      currentStock: targetStock,
+      stockLimit: item.stockLimit,
+      nextResetAt,
+      stockPeriod: item.stockPeriod || 'daily'
+    };
+  },
+
+  async restockAllLimited() {
+    const limitedItems = getAllItems().filter(i => i.stockLimit && i.stockLimit > 0);
+    const results = new Map();
+    for (const item of limitedItems) {
+      const res = await this.restockItem(item.id, item.stockLimit);
+      results.set(item.id, res);
+    }
+    return results;
   }
 };
 
