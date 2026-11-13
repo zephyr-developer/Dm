@@ -1,6 +1,7 @@
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 export const givepremium = {
   name: 'givepremium',
@@ -9,26 +10,16 @@ export const givepremium = {
   cooldown: 0,
 
   async execute(ctx) {
-    let target = null;
-    let days = 30;
+    const { user: target, notFound, errorMessage, remainingArgs } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: true,
+      allowBareUsername: false
+    });
 
-    const rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
-
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
-      days = parseInt(rawArgs[0] || '30', 10);
-    } else if (rawArgs[0]?.startsWith('@')) {
-      target = await userRepo.getUserByUsername(rawArgs[0]);
-      days = parseInt(rawArgs[1] || '30', 10);
-    } else if (rawArgs[1]?.startsWith('@')) {
-      target = await userRepo.getUserByUsername(rawArgs[1]);
-      days = parseInt(rawArgs[0] || '30', 10);
-    } else {
-      // Default to caller
-      target = await userRepo.getOrInitUser(ctx.from.id, ctx.from.username, ctx.from.first_name);
-      days = parseInt(rawArgs[0] || '30', 10);
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
+
+    const days = parseInt(remainingArgs[0] || '30', 10);
 
     if (isNaN(days) || days <= 0) {
       return ctx.reply('⚠️ Usage: <code>/givepremium &lt;@user|reply&gt; [days]</code>', { parse_mode: 'HTML' });
@@ -51,7 +42,7 @@ export const givepremium = {
       day: 'numeric'
     });
 
-    const userMention = target.username ? `@${target.username}` : `<b>${sanitizeHtml(target.first_name)}</b>`;
+    const userMention = target.username ? `@${sanitizeHtml(target.username)}` : `<b>${sanitizeHtml(target.first_name)}</b>`;
 
     return ctx.reply(
       `💎 <b>PREMIUM MEMBERSHIP ACTIVATED!</b> 💎\n\n` +

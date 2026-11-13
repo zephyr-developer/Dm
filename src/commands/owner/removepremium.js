@@ -1,5 +1,6 @@
 import userRepo from '../../database/userRepo.js';
 import { sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 export const removepremium = {
   name: 'removepremium',
@@ -8,19 +9,15 @@ export const removepremium = {
   cooldown: 0,
 
   async execute(ctx) {
-    let target = null;
-    const rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
+    const { user: target, notFound, errorMessage } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: false,
+      allowBareUsername: true,
+      allowNumericId: true,
+      initRepliedUser: false
+    });
 
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getUser(replied.id);
-    } else if (rawArgs[0]?.startsWith('@')) {
-      target = await userRepo.getUserByUsername(rawArgs[0]);
-    } else if (rawArgs[0]) {
-      const parsedId = Number(rawArgs[0]);
-      if (!isNaN(parsedId)) {
-        target = await userRepo.getUser(parsedId);
-      }
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
 
     if (!target) {

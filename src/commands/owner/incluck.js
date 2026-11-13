@@ -1,5 +1,6 @@
 import userRepo from '../../database/userRepo.js';
 import { sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 export const incluck = {
   name: 'incluck',
@@ -8,33 +9,16 @@ export const incluck = {
   cooldown: 0,
 
   async execute(ctx) {
-    const callerId = ctx.from.id;
-    let target = null;
-    let percentage = 0;
+    const { user: target, notFound, errorMessage, remainingArgs } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: true,
+      allowBareUsername: false
+    });
 
-    const rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
-
-    // Case 1: Reply to a user with /incluck <percentage>
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
-      percentage = parseInt(rawArgs[0] || '0', 10);
-    } 
-    // Case 2: /incluck <percentage> @username
-    else if (rawArgs[1]?.startsWith('@')) {
-      target = await userRepo.getUserByUsername(rawArgs[1]);
-      percentage = parseInt(rawArgs[0] || '0', 10);
-    } 
-    // Case 3: /incluck @username <percentage>
-    else if (rawArgs[0]?.startsWith('@')) {
-      target = await userRepo.getUserByUsername(rawArgs[0]);
-      percentage = parseInt(rawArgs[1] || '0', 10);
-    } 
-    // Case 4: /incluck <percentage> (applies to owner themselves)
-    else {
-      target = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
-      percentage = parseInt(rawArgs[0] || '0', 10);
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
+
+    const percentage = parseInt(remainingArgs[0] || '', 10);
 
     if (isNaN(percentage) || percentage < 0) {
       return ctx.reply('⚠️ Usage: <code>/incluck &lt;percentage&gt; [@user_optional]</code> (e.g., <code>/incluck 100</code>)', { parse_mode: 'HTML' });

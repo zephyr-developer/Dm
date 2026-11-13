@@ -30,6 +30,28 @@ let defaultCommandsRegistered = false;
 
 // 1. Global Middlewares (Dedup MUST be first)
 bot.use(dedupUpdates);
+
+// 2. Global Auto-Reply Quote & Forum Topic Threading wrapper
+bot.use(async (ctx, next) => {
+  if (ctx.message) {
+    const origReply = ctx.reply.bind(ctx);
+    ctx.reply = (text, other = {}, signal) => {
+      const mergedOptions = {
+        ...other,
+        reply_parameters: other.reply_parameters || {
+          message_id: ctx.message.message_id,
+          allow_sending_without_reply: true
+        }
+      };
+      if (ctx.message.message_thread_id && !mergedOptions.message_thread_id) {
+        mergedOptions.message_thread_id = ctx.message.message_thread_id;
+      }
+      return origReply(text, mergedOptions, signal);
+    };
+  }
+  await next();
+});
+
 bot.use(registerUser);
 bot.use(heistGuard);
 
@@ -85,7 +107,7 @@ export function checkButtonOwnership(ctx) {
   return true;
 }
 
-// 2. Dynamic Command & Callback Loader (Idempotent / Single-Execution)
+// 3. Dynamic Command & Callback Loader (Idempotent / Single-Execution)
 export async function loadCommands() {
   if (isLoaded) return;
   if (loadingPromise) return loadingPromise;

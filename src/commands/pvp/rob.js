@@ -3,6 +3,7 @@ import inventoryRepo from '../../database/inventoryRepo.js';
 import { handleDeath } from '../../utils/deathEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 export const rob = {
   name: 'rob',
@@ -26,18 +27,15 @@ export const rob = {
       );
     }
 
-    // 2. Identify Target User
-    let target = null;
+    // 2. Identify Target User (topic-safe: explicit @username > genuine human reply)
+    const { user: target, notFound, errorMessage } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: false,
+      allowBareUsername: true,
+      allowNumericId: true
+    });
 
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
-    } else {
-      const args = ctx.message.text.trim().split(/\s+/).slice(1);
-      const usernameArg = args[0];
-      if (usernameArg) {
-        target = await userRepo.getUserByUsername(usernameArg);
-      }
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
 
     if (!target) {

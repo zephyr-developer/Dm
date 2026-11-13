@@ -1,6 +1,7 @@
 import userRepo from '../../database/userRepo.js';
 import { isOwner } from '../../middlewares/ownerGuard.js';
 import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 function parseAmount(str) {
   if (!str) return NaN;
@@ -31,33 +32,20 @@ export const voidcoin = {
       return ctx.reply('❌ Unknown command.');
     }
 
-    const rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
-    let target = null;
-    let targetUsername = null;
-    const remainingArgs = [];
+    // 2. Resolve Target User (topic-safe: explicit @username > genuine human reply)
+    const {
+      user: target,
+      notFound,
+      errorMessage,
+      explicitUsername,
+      remainingArgs
+    } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: false,
+      allowBareUsername: false
+    });
 
-    // 2. Resolve Target User (via replied message or @username)
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
-      targetUsername = replied.username || replied.first_name || String(replied.id);
-
-      // Collect all raw args, filtering out any accidental self @ mentions
-      for (const arg of rawArgs) {
-        if (!arg.startsWith('@')) {
-          remainingArgs.push(arg);
-        }
-      }
-    } else {
-      for (const arg of rawArgs) {
-        if (arg.startsWith('@') && !target) {
-          const uname = arg.replace(/^@/, '');
-          target = await userRepo.getUserByUsername(uname);
-          targetUsername = uname;
-        } else {
-          remainingArgs.push(arg);
-        }
-      }
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
 
     if (!target) {
@@ -71,6 +59,8 @@ export const voidcoin = {
         { parse_mode: 'HTML' }
       );
     }
+
+    const targetUsername = explicitUsername || target.username || target.first_name || String(target.user_id);
 
     // 3. Determine Location (wallet | bank | both, defaults to wallet)
     let location = 'wallet';

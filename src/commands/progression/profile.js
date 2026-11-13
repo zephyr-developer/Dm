@@ -6,6 +6,7 @@ import { getJob } from '../../config/jobs.js';
 import { getXpProgress } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, formatTime, progressBar, sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 async function buildProfileCard(targetUserId, viewerId = targetUserId) {
   const user = await userRepo.getUser(targetUserId);
@@ -71,20 +72,19 @@ export const profile = {
 
   async execute(ctx) {
     const callerId = ctx.from.id;
-    let targetUserId = callerId;
-    let targetUsername = ctx.from.username;
-    let targetFirstName = ctx.from.first_name;
+    await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      targetUserId = replied.id;
-      targetUsername = replied.username;
-      targetFirstName = replied.first_name;
+    const { user: targetUser, notFound, errorMessage } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: true,
+      allowBareUsername: true,
+      allowNumericId: true
+    });
+
+    if (notFound || !targetUser) {
+      return ctx.reply(errorMessage || '❌ Could not find that TeleMemer account.', { parse_mode: 'HTML' });
     }
 
-    await userRepo.getOrInitUser(targetUserId, targetUsername, targetFirstName);
-
-    const { text, keyboard } = await buildProfileCard(targetUserId, callerId);
+    const { text, keyboard } = await buildProfileCard(targetUser.user_id, callerId);
 
     return ctx.reply(text, {
       parse_mode: 'HTML',

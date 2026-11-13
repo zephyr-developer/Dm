@@ -1,5 +1,6 @@
 import userRepo from '../../database/userRepo.js';
 import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 function parseAmount(str) {
   if (!str) return NaN;
@@ -23,27 +24,16 @@ export const generatecoin = {
   cooldown: 0,
 
   async execute(ctx) {
-    const callerId = ctx.from.id;
-    let target = null;
-    let amountStr = '';
+    const { user: target, notFound, errorMessage, remainingArgs } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: true,
+      allowBareUsername: false
+    });
 
-    const rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
-
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
-      amountStr = rawArgs[0];
-    } else if (rawArgs[1]?.startsWith('@')) {
-      target = await userRepo.getUserByUsername(rawArgs[1]);
-      amountStr = rawArgs[0];
-    } else if (rawArgs[0]?.startsWith('@')) {
-      target = await userRepo.getUserByUsername(rawArgs[0]);
-      amountStr = rawArgs[1];
-    } else {
-      target = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
-      amountStr = rawArgs[0];
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
 
+    const amountStr = remainingArgs[0] || '';
     const amount = parseAmount(amountStr);
     if (isNaN(amount) || amount <= 0) {
       return ctx.reply('⚠️ Usage: <code>/generatecoin &lt;amount&gt; [@user_optional]</code>\nExamples: <code>/generatecoin 500k</code> or <code>/generatecoin 10m @friend</code>', { parse_mode: 'HTML' });

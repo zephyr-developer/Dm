@@ -4,6 +4,7 @@ import inventoryRepo from '../../database/inventoryRepo.js';
 import { handleDeath } from '../../utils/deathEngine.js';
 import { formatCoins, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
 import { heistTargets, heistParticipants, clearHeistState } from '../../utils/heistState.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 // Global Map keyed by Telegram message_id to reliably track participants across stateless webhook calls
 if (!global.heistLobbies) {
@@ -153,16 +154,14 @@ export const bankrob = {
       return ctx.reply('❌ You cannot start a bank heist while in <b>Passive Mode</b>!', { parse_mode: 'HTML' });
     }
 
-    let target = null;
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
-    } else {
-      const args = ctx.message.text.trim().split(/\s+/).slice(1);
-      const usernameArg = args[0];
-      if (usernameArg) {
-        target = await userRepo.getUserByUsername(usernameArg);
-      }
+    const { user: target, notFound, errorMessage } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: false,
+      allowBareUsername: true,
+      allowNumericId: true
+    });
+
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
 
     if (!target) {

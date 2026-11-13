@@ -23,6 +23,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL;
 let isPolling = false;
 let isWebhookActive = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let cachedWebhookMiddleware: express.RequestHandler | null = null;
 
 function hasLiveBotToken(): boolean {
   return Boolean(
@@ -55,6 +56,15 @@ async function stopPollingIfRunning() {
       await bot.stop().catch(() => {});
     }
   }
+}
+
+function getWebhookMiddleware(): express.RequestHandler {
+  if (!cachedWebhookMiddleware) {
+    // Only instantiate webhookCallback when webhook mode is actually used,
+    // because grammY's webhookCallback patches bot.start() to throw in polling mode.
+    cachedWebhookMiddleware = webhookCallback(bot, 'express');
+  }
+  return cachedWebhookMiddleware;
 }
 
 async function startTelegramBotWithReconnect() {
@@ -97,21 +107,27 @@ async function startTelegramBotWithReconnect() {
     if (isWebhookActive || isPolling) return;
     isPolling = true;
 
-    bot
-      .start({
-        drop_pending_updates: true,
-        allowed_updates: ['message', 'callback_query'],
-        onStart: (botInfo) => {
-          console.log(`🎉 TeleMemer Bot is LIVE! Username: @${botInfo.username} (ID: ${botInfo.id})`);
-        },
-      })
-      .catch((botErr) => {
-        isPolling = false;
-        if (isWebhookActive) return;
-        console.error('⚠️ Telegram connection dropped:', botErr.message);
-        console.log('🔄 Reconnecting in 5 seconds...');
-        reconnectTimer = setTimeout(launch, 5000);
-      });
+    try {
+      bot
+        .start({
+          drop_pending_updates: true,
+          allowed_updates: ['message', 'callback_query'],
+          onStart: (botInfo) => {
+            console.log(`🎉 TeleMemer Bot is LIVE! Username: @${botInfo.username} (ID: ${botInfo.id})`);
+          },
+        })
+        .catch((botErr) => {
+          isPolling = false;
+          if (isWebhookActive) return;
+          console.error('⚠️ Telegram connection dropped:', botErr.message);
+          console.log('🔄 Reconnecting in 5 seconds...');
+          reconnectTimer = setTimeout(launch, 5000);
+        });
+    } catch (syncErr) {
+      isPolling = false;
+      const message = syncErr instanceof Error ? syncErr.message : String(syncErr);
+      console.error('⚠️ Failed to launch Telegram polling:', message);
+    }
   };
 
   launch();
@@ -124,9 +140,6 @@ async function startServer() {
 
   const app = express();
   app.use(express.json());
-
-  // Lazy-created grammY Express webhook handler
-  const handleTelegramWebhook = webhookCallback(bot, 'express');
 
   // Health & API endpoints
   const handleHealth = async (_req: express.Request, res: express.Response) => {
@@ -226,13 +239,16 @@ async function startServer() {
   app.get('/api/setup-webhook', handleSetupWebhook);
 
   // Telegram Webhook receiver: always acknowledge cleanly so Telegram never retries duplicates
-  app.post('/api/webhook', async (req, res) => {
+  app.post('/api/webhook', async (req, res, next) => {
     try {
+      await stopPollingIfRunning();
+      isWebhookActive = true;
       if (!bot.isInited()) {
         await bot.init();
       }
       await loadCommands();
-      await handleTelegramWebhook(req, res);
+      const handleTelegramWebhook = getWebhookMiddleware();
+      return handleTelegramWebhook(req, res, next);
     } catch (err) {
       console.error('[TeleMemer Webhook Error]:', err);
       if (!res.headersSent) {
@@ -242,16 +258,31 @@ async function startServer() {
   });
 
   // Frontend middleware (Vite in dev, static dist in production)
+  let viteMiddleware: express.RequestHandler | null = null;
+  let viteInitPromise: Promise<void> | null = null;
+
   if (!isProduction) {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
-      },
-      appType: 'spa',
+    viteInitPromise = (async () => {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: process.env.DISABLE_HMR !== 'true',
+        },
+        appType: 'spa',
+      });
+      viteMiddleware = vite.middlewares as unknown as express.RequestHandler;
+    })();
+
+    app.use(async (req, res, next) => {
+      if (!viteMiddleware && viteInitPromise) {
+        await viteInitPromise;
+      }
+      if (viteMiddleware) {
+        return viteMiddleware(req, res, next);
+      }
+      next();
     });
-    app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');
     app.use(express.static(distDir));
@@ -262,6 +293,7 @@ async function startServer() {
 
   const server = http.createServer(app);
 
+  // Bind port 3000 immediately so health probes & dev proxy succeed right away
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(PORT, '0.0.0.0', () => {
@@ -269,6 +301,12 @@ async function startServer() {
       resolve();
     });
   });
+
+  if (viteInitPromise) {
+    viteInitPromise.catch((viteErr) => {
+      console.error('❌ Failed to initialize Vite dev middleware:', viteErr);
+    });
+  }
 
   // Anti-Sleep 4-Minute Self-Ping (Prevents Render / Koyeb / Fly sleeping)
   if (KEEP_ALIVE_URL) {
@@ -305,9 +343,22 @@ async function startServer() {
 
   await startTelegramBotWithReconnect();
 
-  // Graceful shutdown
+  // Graceful shutdown (close keep-alive sockets immediately so restarts never stall on EADDRINUSE)
+  let isShuttingDown = false;
   const shutdown = () => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
     console.log('🛑 Shutting down TeleMemer gracefully...');
+
+    const forceExitTimer = setTimeout(() => {
+      process.exit(0);
+    }, 1500);
+    forceExitTimer.unref();
+
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    }
+
     server.close(async () => {
       await stopPollingIfRunning();
       const pgPool = db.pool as { end?: () => Promise<void> } | null;

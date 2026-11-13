@@ -2,7 +2,8 @@ import { InlineKeyboard } from 'grammy';
 import currencyLogRepo from '../../database/currencyLogRepo.js';
 import userRepo from '../../database/userRepo.js';
 import { isOwner } from '../../middlewares/ownerGuard.js';
-import { formatCoins, formatNumber, sanitizeHtml } from '../../utils/formatters.js';
+import { formatNumber, sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 function timeAgo(date) {
   const past = new Date(date).getTime();
@@ -99,34 +100,25 @@ export const currencylog = {
 
   async execute(ctx) {
     const callerId = ctx.from.id;
+    await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
     let targetUserId = callerId;
 
     // Check if Bot Owner (@tzhunyuan) is inspecting another user's audit log
     if (isOwner(ctx)) {
-      if (ctx.message?.reply_to_message?.from) {
-        targetUserId = ctx.message.reply_to_message.from.id;
-      } else {
-        const args = ctx.message.text.trim().split(/\s+/).slice(1);
-        if (args[0]) {
-          const rawArg = args[0].replace(/^@/, '');
-          const maybeId = Number(rawArg);
-          if (!isNaN(maybeId) && maybeId > 1000) {
-            targetUserId = maybeId;
-          } else {
-            const found = await userRepo.getUserByUsername(rawArg);
-            if (found) {
-              targetUserId = found.user_id;
-            }
-          }
-        }
+      const { user: targetUser, notFound, errorMessage } = await resolveTargetUser(ctx, ctx.match, {
+        fallbackToCaller: true,
+        allowBareUsername: true,
+        allowNumericId: true
+      });
+      if (notFound || !targetUser) {
+        return ctx.reply(errorMessage || '❌ Target user not found.', { parse_mode: 'HTML' });
       }
+      targetUserId = targetUser.user_id;
     }
-
-    await userRepo.getOrInitUser(targetUserId, ctx.from.username, ctx.from.first_name);
 
     const { text, keyboard } = await renderCurrencyLogPage(targetUserId, callerId, 1, 'all');
 
-    await ctx.reply(text, {
+    return ctx.reply(text, {
       parse_mode: 'HTML',
       reply_markup: keyboard
     });

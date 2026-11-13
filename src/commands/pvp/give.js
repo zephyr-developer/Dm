@@ -2,6 +2,7 @@ import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import { findItem } from '../../config/items.js';
 import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
+import { resolveTargetUser } from '../../utils/targetResolver.js';
 
 export const give = {
   name: 'give',
@@ -17,16 +18,13 @@ export const give = {
       return ctx.reply('❌ You cannot send coins or items while in <b>Passive Mode</b>!', { parse_mode: 'HTML' });
     }
 
-    let target = null;
-    let rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
+    const { user: target, notFound, errorMessage, remainingArgs: rawArgs } = await resolveTargetUser(ctx, ctx.match, {
+      fallbackToCaller: false,
+      allowBareUsername: false
+    });
 
-    if (ctx.message?.reply_to_message?.from) {
-      const replied = ctx.message.reply_to_message.from;
-      target = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
-    } else if (rawArgs[0]?.startsWith('@')) {
-      const username = rawArgs[0];
-      target = await userRepo.getUserByUsername(username);
-      rawArgs = rawArgs.slice(1);
+    if (notFound) {
+      return ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
 
     if (!target) {
