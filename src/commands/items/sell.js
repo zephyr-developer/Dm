@@ -1,19 +1,21 @@
+import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
-import { findItem, items } from '../../config/items.js';
-import { formatCoins } from '../../utils/formatters.js';
+import { findItem, getItem, items } from '../../config/items.js';
+import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
 
 export const sell = {
   name: 'sell',
   aliases: [],
-  description: 'Sell collected items or liquidate all loot for coins',
+  description: 'Sell collected items or liquidate all loot for coins with confirmation',
   cooldown: 3,
 
   async execute(ctx) {
     const userId = ctx.from.id;
-    const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
 
-    const args = ctx.message.text.trim().split(/\s+/).slice(1);
+    const rawInput = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1).join(' ').trim();
+    const args = rawInput ? rawInput.split(/\s+/) : [];
     const firstArg = args[0]?.toLowerCase();
 
     if (!firstArg) {
@@ -30,7 +32,7 @@ export const sell = {
     // ==========================================
     // CASE 1: /sell all (liquidate all 'loot' items)
     // ==========================================
-    if (firstArg === 'all') {
+    if (firstArg === 'all' && args.length === 1) {
       const inventory = await inventoryRepo.getUserInventory(userId);
       const lootItems = inventory.filter(entry => {
         const itm = items[entry.item_id];
@@ -41,30 +43,29 @@ export const sell = {
         return ctx.reply('🎒 You do not have any sellable loot items in your backpack right now!');
       }
 
-      let totalEarned = 0;
-      let summaryLines = [];
-
+      let totalEstimated = 0;
+      const previewLines = [];
       for (const entry of lootItems) {
         const itm = items[entry.item_id];
         const earned = itm.sellPrice * entry.quantity;
-        totalEarned += earned;
-        await inventoryRepo.removeItem(userId, entry.item_id, entry.quantity);
-        summaryLines.push(`• ${entry.quantity}x ${itm.emoji} ${itm.name} → ${formatCoins(earned)}`);
+        totalEstimated += earned;
+        previewLines.push(`• ${entry.quantity}x ${itm.emoji} ${itm.name} → ${formatCoins(earned)}`);
       }
 
-      const updated = await userRepo.updateCoins(userId, {
-        walletDelta: totalEarned,
-        sourceCommand: '/sell all',
-        details: `Liquidated ${lootItems.length} loot stacks`
-      });
+      const keyboard = new InlineKeyboard()
+        .text('✅ Confirm', `sell:yes:all:0:${userId}`)
+        .text('❌ Cancel', `sell:no:${userId}`);
 
       return ctx.reply(
-        `💰 <b>Liquidated All Loot!</b>\n` +
-        `Sold all your hunted game, fish, worms, and raw scrap:\n\n` +
-        summaryLines.join('\n') +
-        `\n\n🪙 <b>Total Payout:</b> <b>${formatCoins(totalEarned)}</b>\n` +
-        `👛 <b>New Wallet:</b> ${formatCoins(updated.wallet)}`,
-        { parse_mode: 'HTML' }
+        `💰 <b>Confirm Bulk Loot Liquidation</b>\n\n` +
+        `You are about to sell all loot items in your backpack:\n` +
+        previewLines.join('\n') +
+        `\n\n🪙 <b>Total Payout:</b> <b>${formatCoins(totalEstimated)}</b>\n\n` +
+        `<i>Proceed with selling all loot?</i>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        }
       );
     }
 
@@ -87,7 +88,7 @@ export const sell = {
 
     const item = findItem(itemQuery);
     if (!item) {
-      return ctx.reply(`❌ Could not identify an item called "<b>${itemQuery}</b>".`, { parse_mode: 'HTML' });
+      return ctx.reply(`❌ Could not identify an item called "<b>${sanitizeHtml(itemQuery)}</b>".`, { parse_mode: 'HTML' });
     }
 
     const ownedQuantity = await inventoryRepo.getItem(userId, item.id);
@@ -111,20 +112,119 @@ export const sell = {
     }
 
     const totalPayout = item.sellPrice * quantity;
-    await inventoryRepo.removeItem(userId, item.id, quantity);
-    const updated = await userRepo.updateCoins(userId, {
-      walletDelta: totalPayout,
-      sourceCommand: '/sell',
-      details: `Sold ${quantity}x ${item.name} (${item.emoji})`
-    });
+    const keyboard = new InlineKeyboard()
+      .text('✅ Confirm', `sell:yes:${item.id}:${quantity}:${userId}`)
+      .text('❌ Cancel', `sell:no:${userId}`);
 
     return ctx.reply(
-      `🤝 <b>Deal Complete!</b>\n` +
-      `Sold <b>${quantity}x ${item.emoji} ${item.name}</b> to the merchant for <b>${formatCoins(totalPayout)}</b>.\n\n` +
-      `🎒 <b>Remaining:</b> ${ownedQuantity - quantity}x ${item.name}\n` +
-      `👛 <b>New Wallet:</b> ${formatCoins(updated.wallet)}`,
-      { parse_mode: 'HTML' }
+      `💰 <b>Confirm Pawn Shop Sale</b>\n\n` +
+      `• <b>Selling:</b> ${quantity.toLocaleString('en-US')}x ${item.emoji} <b>${item.name}</b>\n` +
+      `• <b>Payout:</b> ${formatCoins(totalPayout)}\n` +
+      `• <b>Owned:</b> ${ownedQuantity.toLocaleString('en-US')}x\n\n` +
+      `<i>Confirm this sale?</i>`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      }
     );
+  },
+
+  async handleCallback(ctx) {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const decision = parts[1];
+    const targetUserId = Number(parts[parts.length - 1]);
+
+    if (ctx.from.id !== targetUserId) {
+      return ctx.answerCallbackQuery({
+        text: "🚫 This isn't your transaction!",
+        show_alert: true
+      });
+    }
+
+    if (decision === 'no') {
+      await ctx.answerCallbackQuery({ text: 'Sale cancelled.' });
+      return ctx.editMessageText('❌ Transaction cancelled.', { parse_mode: 'HTML' }).catch(() => {});
+    }
+
+    if (decision === 'yes') {
+      const targetItemKey = parts[2];
+      const quantity = parseInt(parts[3], 10);
+
+      // CASE 1: Liquidate all loot
+      if (targetItemKey === 'all') {
+        const inventory = await inventoryRepo.getUserInventory(targetUserId);
+        const lootItems = inventory.filter(entry => {
+          const itm = items[entry.item_id];
+          return itm && itm.type === 'loot' && entry.quantity > 0;
+        });
+
+        if (lootItems.length === 0) {
+          await ctx.answerCallbackQuery({ text: 'No loot items left to sell!', show_alert: true });
+          return ctx.editMessageText('🎒 You no longer have any sellable loot items in your backpack.').catch(() => {});
+        }
+
+        let totalEarned = 0;
+        const summaryLines = [];
+
+        for (const entry of lootItems) {
+          const itm = items[entry.item_id];
+          const earned = itm.sellPrice * entry.quantity;
+          totalEarned += earned;
+          await inventoryRepo.removeItem(targetUserId, entry.item_id, entry.quantity);
+          summaryLines.push(`• ${entry.quantity}x ${itm.emoji} ${itm.name} → ${formatCoins(earned)}`);
+        }
+
+        const updated = await userRepo.updateCoins(targetUserId, {
+          walletDelta: totalEarned,
+          sourceCommand: '/sell all',
+          details: `Liquidated ${lootItems.length} loot stacks`
+        });
+
+        await ctx.answerCallbackQuery({ text: `Sold all loot for ${formatCoins(totalEarned)}!` });
+        return ctx.editMessageText(
+          `💰 <b>Liquidated All Loot!</b>\n` +
+          `Sold all your hunted game, fish, worms, and raw scrap:\n\n` +
+          summaryLines.join('\n') +
+          `\n\n🪙 <b>Total Payout:</b> <b>${formatCoins(totalEarned)}</b>\n` +
+          `👛 <b>New Wallet:</b> ${formatCoins(updated.wallet)}`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+
+      // CASE 2: Sell specific item
+      const item = getItem(targetItemKey);
+      if (!item || isNaN(quantity) || quantity <= 0) {
+        await ctx.answerCallbackQuery({ text: 'Invalid sale parameters.', show_alert: true });
+        return ctx.editMessageText('❌ Transaction failed: Invalid item or quantity.').catch(() => {});
+      }
+
+      const ownedQuantity = await inventoryRepo.getItem(targetUserId, item.id);
+      if (ownedQuantity < quantity) {
+        await ctx.answerCallbackQuery({ text: `You only own ${ownedQuantity}x ${item.name}!`, show_alert: true });
+        return ctx.editMessageText(
+          `❌ <b>Sale Failed:</b> You only have <b>${ownedQuantity}x</b> ${item.emoji} <b>${item.name}</b> left.`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+
+      const totalPayout = item.sellPrice * quantity;
+      await inventoryRepo.removeItem(targetUserId, item.id, quantity);
+      const updated = await userRepo.updateCoins(targetUserId, {
+        walletDelta: totalPayout,
+        sourceCommand: '/sell',
+        details: `Sold ${quantity}x ${item.name} (${item.emoji})`
+      });
+
+      await ctx.answerCallbackQuery({ text: `Sold ${quantity}x ${item.name}!` });
+      return ctx.editMessageText(
+        `🤝 <b>Deal Complete!</b>\n` +
+        `Sold <b>${quantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}</b> to the merchant for <b>${formatCoins(totalPayout)}</b>.\n\n` +
+        `🎒 <b>Remaining:</b> ${(ownedQuantity - quantity).toLocaleString('en-US')}x ${item.name}\n` +
+        `👛 <b>New Wallet:</b> ${formatCoins(updated.wallet)}`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
   }
 };
 

@@ -1,6 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
+import cooldownRepo from '../../database/cooldownRepo.js';
 import { getJob } from '../../config/jobs.js';
 import { getXpProgress } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
@@ -33,7 +34,7 @@ async function buildProfileCard(targetUserId) {
       .join('\n');
   }
 
-  const isPassive = user.passive_mode === 1;
+  const isPassive = Number(user.passive_mode) === 1;
 
   const card = `📜 <b>Player Profile: ${sanitizeHtml(user.first_name)}</b>\n` +
     (user.username ? `👤 <i>@${user.username}</i>\n` : '') +
@@ -95,11 +96,23 @@ export const profile = {
     const targetUserId = Number(parts[2]);
 
     if (action === 'toggle_passive') {
+      // Check 12-hour cooldown before toggling Passive Mode
+      const cd = await cooldownRepo.getCooldown(ctx.from.id, 'passive_toggle');
+      if (cd && cd.remaining > 0) {
+        return ctx.answerCallbackQuery({
+          text: `⏳ You can only toggle Passive Mode once every 12 hours! Wait ${formatTime(cd.remaining)}.`,
+          show_alert: true
+        });
+      }
+
       const user = await userRepo.getUser(targetUserId);
       if (!user) return ctx.answerCallbackQuery({ text: 'User not found.' });
 
-      const newMode = user.passive_mode === 1 ? 0 : 1;
+      const newMode = Number(user.passive_mode) === 1 ? 0 : 1;
       await userRepo.setPassiveMode(targetUserId, newMode);
+
+      // Immediately apply 12-hour (43,200 seconds) cooldown
+      await cooldownRepo.setCooldown(ctx.from.id, 'passive_toggle', 43200);
 
       const { text, keyboard } = await buildProfileCard(targetUserId);
       await ctx.editMessageText(text, {
@@ -108,8 +121,8 @@ export const profile = {
       }).catch(() => {});
 
       const notice = newMode === 1
-        ? '🛡️ Passive Mode Enabled: You cannot be robbed, but you also cannot rob others!'
-        : '⚔️ Passive Mode Disabled: You can now rob others, but you can also be robbed!';
+        ? '🛡️ Passive Mode Enabled! You are immune to /rob & /bankrob, and locked out of PvP/social transfers for 12 hours.'
+        : '⚔️ Passive Mode Disabled! You can now rob, heist, and send gifts, but you are vulnerable to attacks. (12h toggle cooldown applied)';
 
       return ctx.answerCallbackQuery({ text: notice, show_alert: true });
     }

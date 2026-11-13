@@ -41,6 +41,16 @@ export const cooldownRepo = {
     };
   },
 
+  async getCooldown(userId, command) {
+    const res = await this.checkCooldown(userId, command);
+    if (!res.onCooldown) return null;
+    return {
+      onCooldown: true,
+      remaining: res.remainingSeconds,
+      remainingSeconds: res.remainingSeconds
+    };
+  },
+
   async setCooldown(userId, command, durationSeconds) {
     const expiresAt = Math.floor(Date.now() / 1000) + durationSeconds;
     const sql = `

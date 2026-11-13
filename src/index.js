@@ -7,7 +7,8 @@ import { getAllJobs } from './config/jobs.js';
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT) || 3000;
+const isProduction = process.env.NODE_ENV === 'production';
+const PORT = isProduction ? (Number(process.env.PORT) || 3000) : 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const KEEP_ALIVE_URL = process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL;
 

@@ -149,6 +149,10 @@ export const bankrob = {
     const callerId = ctx.from.id;
     const caller = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
+    if (Number(caller.passive_mode) === 1) {
+      return ctx.reply('❌ You cannot start a bank heist while in <b>Passive Mode</b>!', { parse_mode: 'HTML' });
+    }
+
     let target = null;
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
@@ -293,7 +297,14 @@ export const bankrob = {
         return ctx.answerCallbackQuery({ text: 'Crew is full! (Maximum 5 robbers reached)', show_alert: true });
       }
 
-      await userRepo.getOrInitUser(joinerId, ctx.from.username, joinerName);
+      const joiner = await userRepo.getOrInitUser(joinerId, ctx.from.username, joinerName);
+      if (joiner && Number(joiner.passive_mode) === 1) {
+        return ctx.answerCallbackQuery({
+          text: '❌ You cannot join bank heists while in Passive Mode!',
+          show_alert: true
+        });
+      }
+
       lobby.participants.set(joinerId, { userId: joinerId, name: joinerName, username: ctx.from.username });
 
       // Lock joiner into heist participant state

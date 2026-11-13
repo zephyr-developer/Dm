@@ -13,6 +13,10 @@ export const give = {
     const callerId = ctx.from.id;
     const caller = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
+    if (Number(caller.passive_mode) === 1) {
+      return ctx.reply('❌ You cannot send coins or items while in <b>Passive Mode</b>!', { parse_mode: 'HTML' });
+    }
+
     let target = null;
     let rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
 
@@ -38,6 +42,10 @@ export const give = {
 
     if (target.user_id === callerId) {
       return ctx.reply('🤡 You cannot send gifts to yourself!');
+    }
+
+    if (Number(target.passive_mode) === 1) {
+      return ctx.reply('❌ You cannot send coins or items to a player who is in <b>Passive Mode</b>!', { parse_mode: 'HTML' });
     }
 
     if (rawArgs.length === 0) {

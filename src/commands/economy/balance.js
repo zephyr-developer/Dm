@@ -1,6 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
+import { isOwner } from '../../middlewares/ownerGuard.js';
 import { items } from '../../config/items.js';
 import { formatCoins, progressBar, sanitizeHtml } from '../../utils/formatters.js';
 
@@ -14,7 +15,7 @@ async function calculateNetWorth(user) {
   return Number(user.wallet || 0) + Number(user.bank || 0) + inventoryValue;
 }
 
-async function buildBalanceCard(targetUser) {
+async function buildBalanceCard(targetUser, viewerId, viewerIsOwner = false) {
   const netWorth = await calculateNetWorth(targetUser);
   const wallet = Number(targetUser.wallet || 0);
   const bank = Number(targetUser.bank || 0);
@@ -23,11 +24,14 @@ async function buildBalanceCard(targetUser) {
   const bankPercent = bankMax > 0 ? Math.floor((bank / bankMax) * 100) : 0;
   const bankBar = progressBar(bank, bankMax, 8);
   const isPremium = Number(targetUser.premium_until || 0) > Date.now();
-
   const premiumBadge = isPremium ? ' 💎 <b>[PREMIUM MEMBER]</b>' : '';
 
-  const card = `💳 <b>Financial Portfolio for ${sanitizeHtml(targetUser.first_name)}</b>${premiumBadge}\n` +
-    (targetUser.username ? `👤 <i>@${targetUser.username}</i>\n\n` : `\n`) +
+  const targetHandle = targetUser.username
+    ? `@${sanitizeHtml(targetUser.username)}`
+    : sanitizeHtml(targetUser.first_name || 'Player');
+
+  const card = `💰 <b>${targetHandle}'s Balance</b>${premiumBadge}\n` +
+    `👤 <b>Holder:</b> ${sanitizeHtml(targetUser.first_name)}\n\n` +
     `👛 <b>Wallet:</b> ${formatCoins(wallet)}\n` +
     `🏦 <b>Bank:</b> ${formatCoins(bank)} / ${formatCoins(bankMax)} (<b>${bankPercent}%</b>)\n` +
     `📊 <b>Bank Space:</b> ${bankBar}\n` +
@@ -35,8 +39,11 @@ async function buildBalanceCard(targetUser) {
     `⭐ <b>Level:</b> ${targetUser.level} (Prestige: ${targetUser.prestige})`;
 
   const keyboard = new InlineKeyboard()
-    .text('🔄 Refresh', `balance:refresh:${targetUser.user_id}`)
-    .text('📜 Currency Logs', `currencylog:page:1:all:${targetUser.user_id}:${targetUser.user_id}`);
+    .text('🔄 Refresh', `balance:refresh:${targetUser.user_id}:${viewerId}`);
+
+  if (targetUser.user_id === viewerId || viewerIsOwner) {
+    keyboard.text('📜 Currency Logs', `currencylog:page:1:all:${targetUser.user_id}:${viewerId}`);
+  }
 
   return { text: card, keyboard };
 }
@@ -44,23 +51,52 @@ async function buildBalanceCard(targetUser) {
 export const balance = {
   name: 'balance',
   aliases: ['bal'],
-  description: 'View your wallet, bank, and total net worth (with Premium indicator)',
+  description: 'View your or another player\'s wallet, bank, and total net worth',
   cooldown: 0,
 
   async execute(ctx) {
-    let targetUserId = ctx.from.id;
-    let targetUsername = ctx.from.username;
-    let targetFirstName = ctx.from.first_name;
+    const callerId = ctx.from.id;
+    await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
+    let targetUser = null;
+
+    // 1. Check replied message
     if (ctx.message?.reply_to_message?.from) {
       const replied = ctx.message.reply_to_message.from;
-      targetUserId = replied.id;
-      targetUsername = replied.username;
-      targetFirstName = replied.first_name;
+      targetUser = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+    } else {
+      // 2. Check text_mention entity (users without username)
+      const entities = ctx.message?.entities || [];
+      const textMention = entities.find(e => e.type === 'text_mention' && e.user);
+      if (textMention?.user) {
+        const u = textMention.user;
+        targetUser = await userRepo.getOrInitUser(u.id, u.username, u.first_name);
+      } else {
+        // 3. Check @username or username argument
+        const args = (ctx.match || '').trim()
+          ? ctx.match.trim().split(/\s+/)
+          : ctx.message.text.trim().split(/\s+/).slice(1);
+
+        const usernameArg = args[0];
+        if (usernameArg) {
+          const cleanUsername = usernameArg.replace(/^@/, '').trim();
+          targetUser = await userRepo.getUserByUsername(cleanUsername);
+          if (!targetUser) {
+            return ctx.reply(
+              `❌ Could not find a TeleMemer account for <b>@${sanitizeHtml(cleanUsername)}</b>. They need to interact with the bot first!`,
+              { parse_mode: 'HTML' }
+            );
+          }
+        }
+      }
     }
 
-    const user = await userRepo.getOrInitUser(targetUserId, targetUsername, targetFirstName);
-    const { text, keyboard } = await buildBalanceCard(user);
+    // Default to caller
+    if (!targetUser) {
+      targetUser = await userRepo.getUser(callerId);
+    }
+
+    const { text, keyboard } = await buildBalanceCard(targetUser, callerId, isOwner(ctx));
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -73,6 +109,7 @@ export const balance = {
     const parts = data.split(':');
     const action = parts[1];
     const targetUserId = Number(parts[2]);
+    const viewerId = Number(parts[3]) || ctx.from.id;
 
     if (action === 'refresh') {
       const user = await userRepo.getUser(targetUserId);
@@ -80,14 +117,14 @@ export const balance = {
         return ctx.answerCallbackQuery({ text: 'User account not found.' });
       }
 
-      const { text, keyboard } = await buildBalanceCard(user);
+      const { text, keyboard } = await buildBalanceCard(user, viewerId, isOwner(ctx));
       try {
         await ctx.editMessageText(text, {
           parse_mode: 'HTML',
           reply_markup: keyboard
         });
         await ctx.answerCallbackQuery({ text: 'Balance refreshed!' });
-      } catch (err) {
+      } catch {
         await ctx.answerCallbackQuery({ text: 'Balance is already up to date.' });
       }
     }

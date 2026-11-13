@@ -18,7 +18,15 @@ export const rob = {
     const callerId = ctx.from.id;
     const caller = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
-    // 1. Identify Target User
+    // 1. Caller Passive Mode Check
+    if (Number(caller.passive_mode) === 1) {
+      return ctx.reply(
+        '❌ You are in <b>Passive Mode</b>! You cannot rob other players while enjoying passive protection. Disable it in <code>/profile</code> first.',
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // 2. Identify Target User
     let target = null;
 
     if (ctx.message?.reply_to_message?.from) {
@@ -44,15 +52,12 @@ export const rob = {
       return ctx.reply('🤡 You cannot rob yourself, silly.');
     }
 
-    // 2. Passive Mode Checks
-    if (caller.passive_mode === 1) {
-      return ctx.reply('🛡️ You have <b>Passive Mode</b> enabled! You cannot rob others while protected. Disable it in <code>/profile</code>.', { parse_mode: 'HTML' });
-    }
-    if (target.passive_mode === 1) {
+    // 3. Target Passive Mode Check
+    if (Number(target.passive_mode) === 1) {
       return ctx.reply(`🛡️ <b>${sanitizeHtml(target.first_name)}</b> has <b>Passive Mode</b> enabled and is immune to robbery!`, { parse_mode: 'HTML' });
     }
 
-    // 3. Minimum Wallet Balance Checks
+    // 4. Minimum Wallet Balance Checks
     const callerWallet = Number(caller.wallet || 0);
     const targetWallet = Number(target.wallet || 0);
 
@@ -64,8 +69,10 @@ export const rob = {
     }
 
     const callerLuck = await getLuckBreakdown(callerId);
+    const groupName = ctx.chat.title || 'a group';
+    const callerDisplay = caller.username ? `@${sanitizeHtml(caller.username)}` : sanitizeHtml(caller.first_name || 'Someone');
 
-    // 4. Check Defenses: LANDMINE (Luck helps detect & defuse)
+    // 5. Check Defenses: LANDMINE (Luck helps detect & defuse)
     if (await inventoryRepo.hasBuff(target.user_id, 'landmine')) {
       await inventoryRepo.removeBuff(target.user_id, 'landmine');
       const detonateChance = Math.max(0.15, 0.50 - (callerLuck.totalBonus / 400));
@@ -84,15 +91,18 @@ export const rob = {
 
         const deathRes = await handleDeath(ctx, callerId, `stepping on a live Landmine armed by ${target.first_name}`);
         const deathNotice = deathRes.survived
-          ? `🛟 <b>BOOOM!</b> You tripped ${target.first_name}'s 💣 <b>Landmine</b>, but your 🛟 <b>Life Saver</b> consumed itself to save your life! You still paid <b>${formatCoins(fine)}</b> in damages.`
-          : `💥 <b>BOOOOM!</b> You crept up behind ${target.first_name} and stepped directly on their concealed 💣 <b>Landmine</b>!\n` +
+          ? `🛟 <b>BOOOM!</b> You tripped ${sanitizeHtml(target.first_name)}'s 💣 <b>Landmine</b>, but your 🛟 <b>Life Saver</b> consumed itself to save your life! You still paid <b>${formatCoins(fine)}</b> in damages.`
+          : `💥 <b>BOOOOM!</b> You crept up behind ${sanitizeHtml(target.first_name)} and stepped directly on their concealed 💣 <b>Landmine</b>!\n` +
             `The explosion blew you away! Paid <b>${formatCoins(fine)}</b> hazard fine.\n\n` + deathRes.message;
+
+        const dmText = `💣 <b>ALERT:</b> ${callerDisplay} tried to rob you in <b>${sanitizeHtml(groupName)}</b>, but stepped on your Landmine and paid you a 🪙 ${fine.toLocaleString('en-US')} bounty!`;
+        await ctx.api.sendMessage(target.user_id, dmText, { parse_mode: 'HTML' }).catch(() => {});
 
         return ctx.reply(deathNotice, { parse_mode: 'HTML' });
       }
     }
 
-    // 5. Check Defenses: PADLOCK
+    // 6. Check Defenses: PADLOCK
     if (await inventoryRepo.hasBuff(target.user_id, 'padlock')) {
       await inventoryRepo.removeBuff(target.user_id, 'padlock');
       const fine = Math.min(callerWallet, 1500);
@@ -107,6 +117,9 @@ export const rob = {
         details: `Padlock compensation from @${caller.username || caller.first_name}`
       });
 
+      const dmText = `🔒 <b>ALERT:</b> ${callerDisplay} tried to rob you in <b>${sanitizeHtml(groupName)}</b>, but your Padlock broke and protected your wallet! (Received 🪙 ${fine.toLocaleString('en-US')} compensation)`;
+      await ctx.api.sendMessage(target.user_id, dmText, { parse_mode: 'HTML' }).catch(() => {});
+
       return ctx.reply(
         `🔒 <b>CLANK!</b> You reached for <b>${sanitizeHtml(target.first_name)}</b>'s wallet, but your hands hit a heavy locked <b>Padlock</b>!\n` +
         `The padlock broke, alerting the victim! You dropped <b>${formatCoins(fine)}</b> in your clumsy escape.`,
@@ -114,7 +127,7 @@ export const rob = {
       );
     }
 
-    // 6. Roll Robbery Probability (40% base + luck bonus)
+    // 7. Roll Robbery Probability (40% base + luck bonus)
     const successRate = Math.min(0.90, 0.40 + (callerLuck.totalBonus / 250));
     const isSuccess = Math.random() < successRate;
 
@@ -132,6 +145,9 @@ export const rob = {
         details: `Caught pickpocket @${caller.username || caller.first_name} compensation`
       });
 
+      const dmText = `😂 <b>ALERT:</b> ${callerDisplay} tried to rob you in <b>${sanitizeHtml(groupName)}</b>, but they got caught and paid you a 🪙 ${fine.toLocaleString('en-US')} fine!`;
+      await ctx.api.sendMessage(target.user_id, dmText, { parse_mode: 'HTML' }).catch(() => {});
+
       return ctx.reply(
         `🚨 <b>CAUGHT RED-HANDED!</b>\n` +
         `You were spotted trying to pickpocket <b>${sanitizeHtml(target.first_name)}</b>!\n` +
@@ -140,7 +156,7 @@ export const rob = {
       );
     }
 
-    // Success! Steal percentage tilted by luck
+    // 8. Success! Steal percentage tilted by luck
     const stealRoll = Math.random();
     let stealPercentage = 0.15;
 
@@ -148,13 +164,10 @@ export const rob = {
     const bigStealChance = Math.min(0.60, 0.25 + (callerLuck.totalBonus / 300));
 
     if (stealRoll < jackpotChance) {
-      // Cleanout steal: 80%–100%
       stealPercentage = randomBetween(80, 100) / 100;
     } else if (stealRoll < (jackpotChance + bigStealChance)) {
-      // Big steal: 26%–50%
       stealPercentage = randomBetween(26, 50) / 100;
     } else {
-      // Small steal: 10%–25%
       stealPercentage = randomBetween(10, 25) / 100;
     }
 
@@ -169,6 +182,9 @@ export const rob = {
       sourceCommand: '/rob',
       details: `Robbed @${target.username || target.first_name}`
     });
+
+    const dmText = `🚨 <b>ALERT:</b> ${callerDisplay} successfully robbed 🪙 ${stolenAmount.toLocaleString('en-US')} from you in <b>${sanitizeHtml(groupName)}</b>!`;
+    await ctx.api.sendMessage(target.user_id, dmText, { parse_mode: 'HTML' }).catch(() => {});
 
     let heistFlavor = 'You slickly slid your hands into their pocket';
     if (stealPercentage >= 0.80) {

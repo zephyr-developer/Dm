@@ -1,12 +1,13 @@
+import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
-import { findItem } from '../../config/items.js';
+import { findItem, getItem } from '../../config/items.js';
 import { formatCoins, sanitizeHtml } from '../../utils/formatters.js';
 
 export const buy = {
   name: 'buy',
   aliases: [],
-  description: 'Purchase items from the shop without limits or using all/max',
+  description: 'Purchase items from the shop with confirmation',
   cooldown: 3,
 
   async execute(ctx) {
@@ -31,11 +32,9 @@ export const buy = {
     const lastWord = words[words.length - 1].toLowerCase();
     const firstWord = words[0].toLowerCase();
 
-    // Check if the last word is a quantity ('all', 'max', or a number)
     if (words.length > 1 && (/^\d+$/.test(lastWord) || lastWord === 'all' || lastWord === 'max')) {
       quantityStr = lastWord;
       itemQuery = words.slice(0, -1).join(' ');
-    // Or if the first word is a quantity (e.g. /buy 100 banknote)
     } else if (words.length > 1 && (/^\d+$/.test(firstWord) || firstWord === 'all' || firstWord === 'max')) {
       quantityStr = firstWord;
       itemQuery = words.slice(1).join(' ');
@@ -63,7 +62,6 @@ export const buy = {
     const currentWallet = Number(user.wallet || 0);
     let quantity = 1;
 
-    // Handle "all" or "max": calculate maximum affordable quantity
     if (quantityStr === 'all' || quantityStr === 'max') {
       quantity = Math.floor(currentWallet / item.buyPrice);
       if (quantity <= 0) {
@@ -92,21 +90,82 @@ export const buy = {
       );
     }
 
-    // Deduct coins & add items to inventory without any artificial caps
-    const updated = await userRepo.updateCoins(userId, {
-      walletDelta: -totalCost,
-      sourceCommand: '/buy',
-      details: `Bought ${quantity}x ${item.name}`
-    });
-    await inventoryRepo.addItem(userId, item.id, quantity);
-    const newQuantity = await inventoryRepo.getItem(userId, item.id);
+    // Send confirmation prompt (NO deduction yet)
+    const keyboard = new InlineKeyboard()
+      .text('✅ Confirm', `buy:yes:${item.id}:${quantity}:${userId}`)
+      .text('❌ Cancel', `buy:no:${userId}`);
 
     return ctx.reply(
-      `🛒 You bought <b>${quantity.toLocaleString('en-US')}x ${item.name}</b> for <b>🪙 ${totalCost.toLocaleString('en-US')}</b>!\n\n` +
-      `🎒 <b>Now in Backpack:</b> ${newQuantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}\n` +
-      `👛 <b>Remaining Wallet:</b> ${formatCoins(updated.wallet)}`,
-      { parse_mode: 'HTML' }
+      `🛒 <b>Confirm Shop Purchase</b>\n\n` +
+      `• <b>Item:</b> ${quantity.toLocaleString('en-US')}x ${item.emoji} <b>${item.name}</b>\n` +
+      `• <b>Total Cost:</b> ${formatCoins(totalCost)}\n` +
+      `• <b>Your Wallet:</b> ${formatCoins(currentWallet)}\n\n` +
+      `<i>Do you want to complete this purchase?</i>`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      }
     );
+  },
+
+  async handleCallback(ctx) {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const decision = parts[1];
+    const targetUserId = Number(parts[parts.length - 1]);
+
+    if (ctx.from.id !== targetUserId) {
+      return ctx.answerCallbackQuery({
+        text: "🚫 This isn't your transaction!",
+        show_alert: true
+      });
+    }
+
+    if (decision === 'no') {
+      await ctx.answerCallbackQuery({ text: 'Purchase cancelled.' });
+      return ctx.editMessageText('❌ Transaction cancelled.', { parse_mode: 'HTML' }).catch(() => {});
+    }
+
+    if (decision === 'yes') {
+      const itemId = parts[2];
+      const quantity = parseInt(parts[3], 10);
+      const item = getItem(itemId);
+
+      if (!item || !item.buyPrice || isNaN(quantity) || quantity <= 0) {
+        await ctx.answerCallbackQuery({ text: 'Invalid purchase details.', show_alert: true });
+        return ctx.editMessageText('❌ Transaction failed: Invalid item or quantity.').catch(() => {});
+      }
+
+      // Re-validate current wallet balance before executing transaction
+      const user = await userRepo.getUser(targetUserId);
+      const currentWallet = Number(user?.wallet || 0);
+      const totalCost = item.buyPrice * quantity;
+
+      if (currentWallet < totalCost) {
+        await ctx.answerCallbackQuery({ text: 'Insufficient wallet funds!', show_alert: true });
+        return ctx.editMessageText(
+          `💸 <b>Transaction Failed: Insufficient Funds!</b>\n` +
+          `You need <b>${formatCoins(totalCost)}</b>, but your wallet only has <b>${formatCoins(currentWallet)}</b>.`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+
+      const updated = await userRepo.updateCoins(targetUserId, {
+        walletDelta: -totalCost,
+        sourceCommand: '/buy',
+        details: `Bought ${quantity}x ${item.name}`
+      });
+      await inventoryRepo.addItem(targetUserId, item.id, quantity);
+      const newQuantity = await inventoryRepo.getItem(targetUserId, item.id);
+
+      await ctx.answerCallbackQuery({ text: `Bought ${quantity}x ${item.name}!` });
+      return ctx.editMessageText(
+        `🛒 You bought <b>${quantity.toLocaleString('en-US')}x ${item.name}</b> for <b>🪙 ${totalCost.toLocaleString('en-US')}</b>!\n\n` +
+        `🎒 <b>Now in Backpack:</b> ${newQuantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}\n` +
+        `👛 <b>Remaining Wallet:</b> ${formatCoins(updated.wallet)}`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
   }
 };
 
