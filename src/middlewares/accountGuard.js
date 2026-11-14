@@ -32,7 +32,7 @@ export async function accountGuard(ctx, next) {
     }
   }
 
-  if (isCallback && callbackData.startsWith('appeal:')) {
+  if (isCallback && (callbackData.startsWith('appeal:') || callbackData === 'gamble:warning')) {
     return next();
   }
 

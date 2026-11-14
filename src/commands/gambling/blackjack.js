@@ -143,7 +143,10 @@ export const blackjack = {
         `💰 <b>Payout (3:2):</b> +${formatCoins(payout)}!\n` +
         `👛 <b>New Wallet:</b> ${formatCoins(afterWinUser.wallet)}`;
 
-      return ctx.reply(winMsg, { parse_mode: 'HTML' });
+      return ctx.reply(winMsg, {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard().text('⚠️', 'gamble:warning')
+      });
     }
 
     // Store game state
@@ -164,6 +167,7 @@ export const blackjack = {
     if (afterBetUser.wallet >= bet && bet * 2 <= MAX_GAMBLE_BET) {
       keyboard.text('💰 Double Down', `blackjack:double:${userId}`);
     }
+    keyboard.row().text('⚠️', 'gamble:warning');
 
     const tableMsg = `🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(bet)})${clampNotice}\n\n` +
       `👤 <b>Your Hand:</b> ${renderHand(playerCards)} (Score: <b>${playerScore}</b>)\n` +
@@ -212,13 +216,18 @@ export const blackjack = {
           `💸 You lost your bet of <b>${formatCoins(game.bet)}</b>.\n` +
           `👛 <b>Wallet:</b> ${formatCoins(user ? user.wallet : 0)}`;
 
-        await ctx.editMessageText(bustMsg, { parse_mode: 'HTML' });
+        await ctx.editMessageText(bustMsg, {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard().text('⚠️', 'gamble:warning')
+        });
         return ctx.answerCallbackQuery({ text: 'Busted!' });
       }
 
       const keyboard = new InlineKeyboard()
         .text('🃏 Hit', `blackjack:hit:${targetUserId}`)
-        .text('🛑 Stand', `blackjack:stand:${targetUserId}`);
+        .text('🛑 Stand', `blackjack:stand:${targetUserId}`)
+        .row()
+        .text('⚠️', 'gamble:warning');
 
       const updatedMsg = `🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(game.bet)})\n\n` +
         `👤 <b>Your Hand:</b> ${renderHand(game.playerCards)} (Score: <b>${score}</b>)\n` +
@@ -276,7 +285,10 @@ export const blackjack = {
           `💸 You lost your doubled bet of <b>${formatCoins(game.bet)}</b>.\n` +
           `👛 <b>Wallet:</b> ${formatCoins(updatedUser?.wallet || 0)}`;
 
-        await ctx.editMessageText(bustMsg, { parse_mode: 'HTML' });
+        await ctx.editMessageText(bustMsg, {
+          parse_mode: 'HTML',
+          reply_markup: new InlineKeyboard().text('⚠️', 'gamble:warning')
+        });
         return ctx.answerCallbackQuery({ text: 'Busted on Double Down!' });
       }
 
@@ -353,7 +365,10 @@ async function resolveDealerTurn(ctx, game, targetUserId) {
     (payout > 0 ? `💰 <b>Payout:</b> +${formatCoins(payout)}\n` : `💸 Lost bet of <b>${formatCoins(game.bet)}</b>\n`) +
     `👛 <b>Wallet:</b> ${formatCoins(updatedWallet)}`;
 
-  await ctx.editMessageText(finalMsg, { parse_mode: 'HTML' });
+  await ctx.editMessageText(finalMsg, {
+    parse_mode: 'HTML',
+    reply_markup: new InlineKeyboard().text('⚠️', 'gamble:warning')
+  });
   await ctx.answerCallbackQuery({ text: 'Hand resolved!' });
 }
 

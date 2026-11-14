@@ -1,3 +1,4 @@
+import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import { addXp } from '../../utils/levelEngine.js';
 import { getLuckBreakdown } from '../../utils/luckEngine.js';
@@ -5,6 +6,10 @@ import { formatCoins, parseBet, pickRandom } from '../../utils/formatters.js';
 
 const MAX_GAMBLE_BET = 100_000_000;
 const STANDARD_SYMBOLS = ['🍒', '🍋', '🍇', '🔔'];
+
+function buildWarningKeyboard() {
+  return new InlineKeyboard().text('⚠️', 'gamble:warning');
+}
 
 function pickThreeDistinct() {
   const pool = ['🍒', '🍋', '🍇', '🔔', '💎', '🐸'];
@@ -36,7 +41,10 @@ export const slots = {
         `• 3 Matching = <b>4x Win</b>\n` +
         `• 2 Matching = <b>1.2x Return</b>\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
-        { parse_mode: 'HTML' }
+        {
+          parse_mode: 'HTML',
+          reply_markup: buildWarningKeyboard()
+        }
       );
     }
 
@@ -135,7 +143,10 @@ export const slots = {
       `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
       (xpRes.message ? `\n${xpRes.message}` : '');
 
-    return ctx.reply(display, { parse_mode: 'HTML' });
+    return ctx.reply(display, {
+      parse_mode: 'HTML',
+      reply_markup: buildWarningKeyboard()
+    });
   }
 };
 

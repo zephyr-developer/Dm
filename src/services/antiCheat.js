@@ -425,6 +425,94 @@ export async function handleAntiCheatCallback(ctx) {
   return ctx.answerCallbackQuery().catch(() => {});
 }
 
+/**
+ * Handles Owner inline keyboard moderation actions from /report dossiers:
+ * `rep:freeze:<targetId>:<reporterId>`, `rep:ban:<targetId>:<reporterId>`, `rep:dismiss:<targetId>:<reporterId>`.
+ */
+export async function handleReportModerationCallback(ctx) {
+  const callerUsername = ctx.from?.username?.toLowerCase()?.replace(/^@/, '');
+  const isEnvOwner = process.env.OWNER_ID && Number(ctx.from?.id) === Number(process.env.OWNER_ID);
+  if (callerUsername !== 'tzhunyuan' && !isEnvOwner) {
+    return ctx.answerCallbackQuery({ text: '❌ Unauthorized: Owner only.', show_alert: true }).catch(() => {});
+  }
+
+  const parts = String(ctx.callbackQuery?.data || '').split(':');
+  const action = parts[1];
+  const targetUserId = Number(parts[2]);
+
+  if (!action || isNaN(targetUserId)) {
+    return ctx.answerCallbackQuery({ text: '⚠️ Invalid report action payload.' }).catch(() => {});
+  }
+
+  const originalText = ctx.callbackQuery?.message?.text || '';
+  const safeBase = sanitizeHtml(originalText);
+
+  if (action === 'dismiss') {
+    await ctx.editMessageText(
+      `${safeBase}\n\n❌ <b>ACTION TAKEN:</b> Report dismissed by Bot Owner.`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+    return ctx.answerCallbackQuery({ text: '❌ Report dismissed.' }).catch(() => {});
+  }
+
+  const target = await userRepo.getUser(targetUserId);
+  if (!target) {
+    return ctx.answerCallbackQuery({ text: '❌ Suspect user not found.', show_alert: true }).catch(() => {});
+  }
+
+  if (isOwnerUserRecord(target)) {
+    return ctx.answerCallbackQuery({ text: '❌ Cannot moderate the Bot Owner.', show_alert: true }).catch(() => {});
+  }
+
+  const targetHandle = target.username ? `@${sanitizeHtml(target.username)}` : sanitizeHtml(target.first_name || String(targetUserId));
+
+  if (action === 'freeze') {
+    const reason = 'Frozen under investigation following player report';
+    await userRepo.setAccountStatus(targetUserId, 'frozen', reason, Number(target.flagged_amount || 0));
+
+    await sendUserDm(
+      targetUserId,
+      `❄️ <b>ACCOUNT FROZEN</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🚨 Your TeleMemer account has been <b>FROZEN</b> by the Bot Owner.\n` +
+      `📝 <b>Reason:</b> ${sanitizeHtml(reason)}\n\n` +
+      `<i>All your coins and items are preserved. You may submit an appeal once every 24 hours using:</i>\n` +
+      `<code>/appeal &lt;your explanation&gt;</code>`
+    );
+
+    await ctx.editMessageText(
+      `${safeBase}\n\n❄️ <b>ACTION TAKEN:</b> ${targetHandle} (<code>${targetUserId}</code>) has been <b>FROZEN</b> under investigation.`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
+    return ctx.answerCallbackQuery({ text: '❄️ Suspect frozen & notified.' }).catch(() => {});
+  }
+
+  if (action === 'ban') {
+    const reason = 'Banned for violating rules (Reported for RMT/Abuse)';
+    await userRepo.setAccountStatus(targetUserId, 'banned', reason, Number(target.flagged_amount || 0));
+
+    await sendUserDm(
+      targetUserId,
+      `🔨 <b>ACCOUNT BANNED</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `❌ Your TeleMemer account has been <b>BANNED</b> by the Bot Owner.\n` +
+      `📝 <b>Reason:</b> ${sanitizeHtml(reason)}\n\n` +
+      `<i>All your data, coins, and items have been preserved. You may submit an appeal once every 24 hours using:</i>\n` +
+      `<code>/appeal &lt;your explanation&gt;</code>`
+    );
+
+    await ctx.editMessageText(
+      `${safeBase}\n\n🔨 <b>ACTION TAKEN:</b> ${targetHandle} (<code>${targetUserId}</code>) has been <b>BANNED</b> (all data preserved).`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
+    return ctx.answerCallbackQuery({ text: '🔨 Suspect banned (data preserved).' }).catch(() => {});
+  }
+
+  return ctx.answerCallbackQuery().catch(() => {});
+}
+
 export default {
   GAIN_SPIKE_THRESHOLD,
   HARD_CAP_ANOMALY_THRESHOLD,
@@ -440,5 +528,6 @@ export default {
   sendAppealReviewCard,
   evaluateTransactionAnomaly,
   evaluateGiveTransferAnomaly,
-  handleAntiCheatCallback
+  handleAntiCheatCallback,
+  handleReportModerationCallback
 };

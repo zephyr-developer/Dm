@@ -57,7 +57,9 @@ export const highlow = {
     const keyboard = new InlineKeyboard()
       .text('⬆️ Higher', `highlow:higher:${userId}`)
       .text('🎯 JACKPOT! (Same)', `highlow:jackpot:${userId}`)
-      .text('⬇️ Lower', `highlow:lower:${userId}`);
+      .text('⬇️ Lower', `highlow:lower:${userId}`)
+      .row()
+      .text('⚠️', 'gamble:warning');
 
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
     const betNotice = bet > 0
@@ -159,7 +161,10 @@ export const highlow = {
         `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
         (xpRes.message ? `\n${xpRes.message}` : '');
 
-      await ctx.editMessageText(msg, { parse_mode: 'HTML' });
+      await ctx.editMessageText(msg, {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard().text('⚠️', 'gamble:warning')
+      });
       await ctx.answerCallbackQuery({ text: 'You won!' });
     } else {
       const xpRes = await addXp(targetUserId, 10);
@@ -179,7 +184,10 @@ export const highlow = {
         `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
         (xpRes.message ? `\n${xpRes.message}` : '');
 
-      await ctx.editMessageText(msg, { parse_mode: 'HTML' });
+      await ctx.editMessageText(msg, {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard().text('⚠️', 'gamble:warning')
+      });
       await ctx.answerCallbackQuery({ text: 'Incorrect guess!' });
     }
   }

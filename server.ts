@@ -278,16 +278,15 @@ async function startServer() {
       let premiumCount = 0;
 
       try {
-        const userRes = await db.query('SELECT COUNT(*) as count FROM users');
+        const [userRes, coinsRes, groupRes, premRes] = await Promise.all([
+          db.query('SELECT COUNT(*) as count FROM users'),
+          db.query('SELECT SUM(wallet + bank) as total FROM users'),
+          db.query('SELECT COUNT(DISTINCT chat_id) as count FROM group_members'),
+          db.query('SELECT COUNT(*) as count FROM users WHERE premium_until > $1', [Date.now()]),
+        ]);
         userCount = Number(userRes.rows[0]?.count || 0);
-
-        const coinsRes = await db.query('SELECT SUM(wallet + bank) as total FROM users');
         totalCoins = Number(coinsRes.rows[0]?.total || 0);
-
-        const groupRes = await db.query('SELECT COUNT(DISTINCT chat_id) as count FROM group_members');
         groupCount = Number(groupRes.rows[0]?.count || 0);
-
-        const premRes = await db.query('SELECT COUNT(*) as count FROM users WHERE premium_until > $1', [Date.now()]);
         premiumCount = Number(premRes.rows[0]?.count || 0);
       } catch {
         // Keep health response alive even if DB is still connecting
@@ -403,13 +402,17 @@ async function startServer() {
     })();
 
     app.use(async (req, res, next) => {
-      if (!viteMiddleware && viteInitPromise) {
-        await viteInitPromise;
+      try {
+        if (!viteMiddleware && viteInitPromise) {
+          await viteInitPromise;
+        }
+        if (viteMiddleware) {
+          return viteMiddleware(req, res, next);
+        }
+        next();
+      } catch (err) {
+        next(err);
       }
-      if (viteMiddleware) {
-        return viteMiddleware(req, res, next);
-      }
-      next();
     });
   } else {
     const distDir = path.resolve(__dirname, 'dist');
@@ -471,7 +474,7 @@ async function startServer() {
 
   await startTelegramBotWithReconnect();
 
-  // Graceful shutdown (stop polling & release lease FIRST so restarts never hit 409 Conflict)
+  // Graceful shutdown: release port 3000 immediately, then stop polling & release lease
   const shutdown = async () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
@@ -482,21 +485,25 @@ async function startServer() {
     }, 3000);
     forceExitTimer.unref();
 
-    await stopPollingIfRunning();
-    await releasePollingLease();
-
     if (typeof server.closeAllConnections === 'function') {
       server.closeAllConnections();
     }
-
-    server.close(async () => {
-      const pgPool = db.pool as { end?: () => Promise<void> } | null;
-      if (pgPool && typeof pgPool.end === 'function') {
-        await pgPool.end().catch(() => {});
-      }
-      console.log('👋 Database and bot connections closed safely.');
-      process.exit(0);
+    const serverClosed = new Promise<void>((resolve) => {
+      server.close(() => resolve());
     });
+
+    await Promise.allSettled([
+      serverClosed,
+      stopPollingIfRunning(),
+      releasePollingLease(),
+    ]);
+
+    const pgPool = db.pool as { end?: () => Promise<void> } | null;
+    if (pgPool && typeof pgPool.end === 'function') {
+      await pgPool.end().catch(() => {});
+    }
+    console.log('👋 Database and bot connections closed safely.');
+    process.exit(0);
   };
 
   process.on('SIGINT', shutdown);

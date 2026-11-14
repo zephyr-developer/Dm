@@ -79,6 +79,7 @@ function buildScratchKeyboard(userId, board, revealedIndices, isFinished = false
     keyboard.row();
   }
 
+  keyboard.text('⚠️', 'gamble:warning');
   return keyboard;
 }
 

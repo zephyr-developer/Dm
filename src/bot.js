@@ -11,7 +11,20 @@ import cooldownRepo from './database/cooldownRepo.js';
 import userRepo from './database/userRepo.js';
 import { isOwner } from './middlewares/ownerGuard.js';
 import { formatTime } from './utils/formatters.js';
-import { setSecurityBot, handleAntiCheatCallback } from './services/antiCheat.js';
+import { setSecurityBot, handleAntiCheatCallback, handleReportModerationCallback } from './services/antiCheat.js';
+
+const GAMBLE_WARNING_ALERT =
+  '⚠️ Our Stance on Gambling:\nGambling is entertainment, NOT a way to make money. The house always wins! Never spend real money. Report RMT sellers via /report!';
+
+const GAMBLE_WARNING_FULL_TEXT =
+  `⚠️ <b>Our Stance on Gambling</b>\n` +
+  `━━━━━━━━━━━━━━━━━━━━━\n` +
+  `It is important to remember that gambling is not a way to make money, real or fake. It is a form of entertainment and should be treated as such. If you or someone you know is struggling with gambling addiction, please seek help.\n\n` +
+  `Additionally, please remember that the odds are always in favor of the house. The house always wins.\n` +
+  `You should NEVER spend real money to gamble in games. If someone is offering to sell you in-game currency for real money, they are breaking our listed rules and should be reported: <code>/report &lt;@user&gt; &lt;reason&gt;</code>`;
+
+const GAMBLE_WARNING_COOLDOWN_MS = 60_000;
+const gambleWarningCooldowns = new Map();
 
 dotenv.config();
 
@@ -85,8 +98,8 @@ export function checkButtonOwnership(ctx) {
   if (!data) return true;
 
   const parts = data.split(':');
-  // Anti-cheat Owner review buttons (`ac:<action>:<targetUserId>`) are restricted exclusively to @tzhunyuan
-  if (parts[0] === 'ac') {
+  // Anti-cheat & Report Owner review buttons (`ac:...` and `rep:...`) are restricted exclusively to @tzhunyuan
+  if (parts[0] === 'ac' || parts[0] === 'rep') {
     if (!isOwner(ctx)) {
       ctx.answerCallbackQuery({
         text: '❌ Unauthorized: Owner security controls only.',
@@ -97,8 +110,9 @@ export function checkButtonOwnership(ctx) {
     return true;
   }
 
-  // If the callback explicitly marks itself as shared (e.g. coinbomb, heist join), allow all
+  // If the callback explicitly marks itself as shared (e.g. gamble:warning, coinbomb, heist join), allow all
   if (
+    data === 'gamble:warning' ||
     parts.includes('shared') ||
     parts.includes('public') ||
     parts[0] === 'heist_join' ||
@@ -310,12 +324,60 @@ function registerDefaultCommands() {
     const data = ctx.callbackQuery.data;
     const parts = data.split(':');
 
+    if (data === 'gamble:warning') {
+      await ctx.answerCallbackQuery({
+        text: GAMBLE_WARNING_ALERT,
+        show_alert: true
+      }).catch(() => {});
+
+      const chatId = ctx.chat?.id ?? ctx.callbackQuery?.message?.chat?.id ?? 'unknown';
+      const userId = ctx.from?.id ?? 'unknown';
+      const cdKey = `${chatId}:${userId}`;
+      const now = Date.now();
+      const lastSentAt = gambleWarningCooldowns.get(cdKey) || 0;
+
+      if (now - lastSentAt >= GAMBLE_WARNING_COOLDOWN_MS) {
+        if (gambleWarningCooldowns.size > 500) {
+          for (const [k, ts] of gambleWarningCooldowns.entries()) {
+            if (now - ts >= GAMBLE_WARNING_COOLDOWN_MS) {
+              gambleWarningCooldowns.delete(k);
+            }
+          }
+        }
+        gambleWarningCooldowns.set(cdKey, now);
+
+        const triggerMsg = ctx.callbackQuery?.message;
+        const replyOpts = { parse_mode: 'HTML' };
+        if (triggerMsg?.message_id) {
+          replyOpts.reply_parameters = {
+            message_id: triggerMsg.message_id,
+            allow_sending_without_reply: true
+          };
+        }
+        if (triggerMsg?.message_thread_id) {
+          replyOpts.message_thread_id = triggerMsg.message_thread_id;
+        }
+        await ctx.reply(GAMBLE_WARNING_FULL_TEXT, replyOpts).catch(() => {});
+      }
+      return;
+    }
+
     if (parts[0] === 'ac') {
       try {
         await handleAntiCheatCallback(ctx);
       } catch (err) {
         console.error(`[TeleMemer] Error handling anti-cheat callback ${data}:`, err.message);
         await ctx.answerCallbackQuery({ text: '⚠️ Failed to execute security action.' }).catch(() => {});
+      }
+      return;
+    }
+
+    if (parts[0] === 'rep') {
+      try {
+        await handleReportModerationCallback(ctx);
+      } catch (err) {
+        console.error(`[TeleMemer] Error handling report moderation callback ${data}:`, err.message);
+        await ctx.answerCallbackQuery({ text: '⚠️ Failed to execute report moderation action.' }).catch(() => {});
       }
       return;
     }
