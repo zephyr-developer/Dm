@@ -213,6 +213,8 @@ export const report = {
         .row()
         .text('🔨 Ban Suspect (Keep Data)', `rep:ban:${targetId}:${callerId}`)
         .row()
+        .text('💬 Ask User for Info', `ac:askinfo:${targetId}`)
+        .row()
         .text('❌ Dismiss Report', `rep:dismiss:${targetId}:${callerId}`);
 
       await ctx.api.sendMessage(ownerChatId, dossier, {

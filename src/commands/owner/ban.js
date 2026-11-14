@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
 import { isOwner } from '../../middlewares/ownerGuard.js';
-import { sanitizeHtml } from '../../utils/formatters.js';
+import { formatDurationMs, parseDuration, sanitizeHtml } from '../../utils/formatters.js';
 import { isGenuineUserReply } from '../../utils/targetResolver.js';
 import { createConfirmation, consumeConfirmation, deleteConfirmation, getConfirmation } from '../../utils/confirmations.js';
 import { isOwnerUserRecord, sendUserDm } from '../../services/antiCheat.js';
@@ -11,7 +11,42 @@ function isAuthorizedOwner(ctx) {
   return callerUsername === 'tzhunyuan' || isOwner(ctx);
 }
 
-async function resolveBanTargetAndReason(ctx) {
+function splitDurationAndReason(remainingTokens) {
+  if (!remainingTokens || remainingTokens.length === 0) {
+    return { durationMs: null, durationLabel: 'Permanent', reason: '' };
+  }
+
+  // Check single-token duration like "30m", "12h", "7d", "2w", "1y", "perm"
+  const singleParsed = parseDuration(remainingTokens[0]);
+  if (singleParsed.isDurationToken) {
+    return {
+      durationMs: singleParsed.durationMs,
+      durationLabel: singleParsed.label,
+      reason: remainingTokens.slice(1).join(' ').trim()
+    };
+  }
+
+  // Also support two-token duration like "30 mins" or "7 days" when 2nd token is a unit word
+  if (remainingTokens.length >= 2 && /^\d+(?:\.\d+)?$/.test(remainingTokens[0])) {
+    const unitCheck = parseDuration(`${remainingTokens[0]}${remainingTokens[1]}`);
+    if (unitCheck.isDurationToken) {
+      return {
+        durationMs: unitCheck.durationMs,
+        durationLabel: unitCheck.label,
+        reason: remainingTokens.slice(2).join(' ').trim()
+      };
+    }
+  }
+
+  // First token is not a duration -> treat as Permanent ban and full text as reason
+  return {
+    durationMs: null,
+    durationLabel: 'Permanent',
+    reason: remainingTokens.join(' ').trim()
+  };
+}
+
+async function resolveBanTargetDurationAndReason(ctx) {
   const rawInput = (
     (typeof ctx.match === 'string' && ctx.match.trim())
       ? ctx.match.trim()
@@ -23,7 +58,7 @@ async function resolveBanTargetAndReason(ctx) {
   const atIdx = tokens.findIndex(t => t.startsWith('@') && t.length > 1);
   if (atIdx !== -1) {
     const cleanUsername = tokens[atIdx].replace(/^@+/, '').trim();
-    const reason = tokens.filter((_, idx) => idx !== atIdx).join(' ').trim();
+    const restTokens = tokens.filter((_, idx) => idx !== atIdx);
     const user = await userRepo.getUserByUsername(cleanUsername);
     if (!user) {
       return {
@@ -31,7 +66,8 @@ async function resolveBanTargetAndReason(ctx) {
         errorMessage: `❌ User @${sanitizeHtml(cleanUsername)} has not registered/played TeleMemer yet!`
       };
     }
-    return { user, targetLabel: user.username || cleanUsername, reason };
+    const { durationMs, durationLabel, reason } = splitDurationAndReason(restTokens);
+    return { user, targetLabel: user.username || cleanUsername, durationMs, durationLabel, reason };
   }
 
   // 2. Text mention entity (users without @username)
@@ -55,13 +91,14 @@ async function resolveBanTargetAndReason(ctx) {
         errorMessage: `❌ User ${sanitizeHtml(label)} has not registered/played TeleMemer yet!`
       };
     }
-    return { user, targetLabel: user.username || user.first_name || String(user.user_id), reason: remaining.join(' ').trim() };
+    const { durationMs, durationLabel, reason } = splitDurationAndReason(remaining);
+    return { user, targetLabel: user.username || user.first_name || String(user.user_id), durationMs, durationLabel, reason };
   }
 
   // 3. Explicit numeric Telegram user ID in first token
   if (tokens.length > 0 && /^\d+$/.test(tokens[0]) && Number(tokens[0]) > 1000) {
     const targetId = Number(tokens[0]);
-    const reason = tokens.slice(1).join(' ').trim();
+    const restTokens = tokens.slice(1);
     const user = await userRepo.getUser(targetId);
     if (!user) {
       return {
@@ -69,28 +106,32 @@ async function resolveBanTargetAndReason(ctx) {
         errorMessage: `❌ User <code>${sanitizeHtml(tokens[0])}</code> has not registered/played TeleMemer yet!`
       };
     }
-    return { user, targetLabel: user.username || String(user.user_id), reason };
+    const { durationMs, durationLabel, reason } = splitDurationAndReason(restTokens);
+    return { user, targetLabel: user.username || String(user.user_id), durationMs, durationLabel, reason };
   }
 
-  // 4. Genuine human reply (topic-safe) -> all tokens become the reason
+  // 4. Genuine human reply (topic-safe) -> tokens contain [duration] <reason>
   if (isGenuineUserReply(ctx)) {
     const replied = ctx.message.reply_to_message.from;
     const user = await userRepo.getOrInitUser(replied.id, replied.username, replied.first_name);
+    const { durationMs, durationLabel, reason } = splitDurationAndReason(tokens);
     return {
       user,
       targetLabel: user.username || user.first_name || String(user.user_id),
-      reason: tokens.join(' ').trim()
+      durationMs,
+      durationLabel,
+      reason
     };
   }
 
-  return { user: null, notFound: false, reason: '' };
+  return { user: null, notFound: false, durationMs: null, durationLabel: 'Permanent', reason: '' };
 }
 
 export const ban = {
   name: 'ban',
   aliases: ['banuser'],
   category: 'owner',
-  description: 'Owner: Ban a user while preserving all coins, items, and progression for appeals',
+  description: 'Owner: Timed or permanent ban preserving all coins, items, and progression for appeals',
   cooldown: 0,
 
   async execute(ctx) {
@@ -98,7 +139,8 @@ export const ban = {
       return ctx.reply('❌ Unknown command.');
     }
 
-    const { user: target, notFound, errorMessage, targetLabel, reason } = await resolveBanTargetAndReason(ctx);
+    const { user: target, notFound, errorMessage, targetLabel, durationMs, durationLabel, reason } =
+      await resolveBanTargetDurationAndReason(ctx);
 
     if (notFound) {
       return ctx.reply(errorMessage, { parse_mode: 'HTML' });
@@ -107,11 +149,13 @@ export const ban = {
     if (!target) {
       return ctx.reply(
         '⚠️ <b>Target user not found!</b>\n' +
-        'Usage: <code>/ban &lt;@username|user_id|reply&gt; &lt;reason&gt;</code>\n\n' +
+        'Usage: <code>/ban &lt;@username|user_id|reply&gt; [duration] &lt;reason&gt;</code>\n\n' +
         'Examples:\n' +
-        '• <code>/ban @cheater Exploiting infinite coins</code>\n' +
-        '• <code>/ban 123456789 Alt-account farming</code>\n' +
-        '• Or reply to a message with <code>/ban Rule violation</code>',
+        '• <code>/ban @cheater 30m Spamming commands</code>\n' +
+        '• <code>/ban @cheater 7d Real money trading attempt</code>\n' +
+        '• <code>/ban 123456789 2w Toxic behavior</code>\n' +
+        '• <code>/ban @cheater Exploiting infinite coins</code> (Permanent)\n' +
+        '• Or reply to a message with <code>/ban 12h Rule violation</code>',
         { parse_mode: 'HTML' }
       );
     }
@@ -122,7 +166,7 @@ export const ban = {
 
     if (!reason || reason.trim().length === 0) {
       return ctx.reply(
-        '❌ <b>Reason is required!</b> Usage: <code>/ban @username &lt;reason&gt;</code>',
+        '❌ <b>Reason is required!</b> Usage: <code>/ban @username [duration] &lt;reason&gt;</code>',
         { parse_mode: 'HTML' }
       );
     }
@@ -134,6 +178,8 @@ export const ban = {
       callerId,
       targetId: target.user_id,
       targetUsername: displayHandle,
+      durationMs: durationMs || null,
+      durationLabel: durationLabel || 'Permanent',
       reason: reason.trim(),
       existingFlagged: Number(target.flagged_amount || 0)
     });
@@ -144,8 +190,10 @@ export const ban = {
 
     return ctx.reply(
       `🔨 <b>Confirm Account Ban</b>\n` +
-      `Target: <b>${sanitizeHtml(displayHandle)}</b> (<code>${target.user_id}</code>)\n` +
-      `Reason: <i>${sanitizeHtml(reason.trim())}</i>\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `👤 <b>Target:</b> ${sanitizeHtml(displayHandle)} (<code>${target.user_id}</code>)\n` +
+      `⏳ <b>Duration:</b> <b>${sanitizeHtml(durationLabel || 'Permanent')}</b>\n` +
+      `📝 <b>Reason:</b> <i>${sanitizeHtml(reason.trim())}</i>\n\n` +
       `<i>(All user data, coins, and items will be preserved for appeal purposes)</i>`,
       { parse_mode: 'HTML', reply_markup: keyboard }
     );
@@ -183,7 +231,16 @@ export const ban = {
 
     consumeConfirmation(token);
 
-    await userRepo.setAccountStatus(pending.targetId, 'banned', pending.reason, pending.existingFlagged);
+    const banExpiresAt = pending.durationMs ? Date.now() + Number(pending.durationMs) : null;
+    const durationText = pending.durationMs ? formatDurationMs(pending.durationMs) : 'Permanent';
+
+    await userRepo.setAccountStatus(
+      pending.targetId,
+      'banned',
+      pending.reason,
+      pending.existingFlagged,
+      banExpiresAt
+    );
 
     // Notify banned user privately (preserving all coins/items)
     await sendUserDm(
@@ -191,13 +248,15 @@ export const ban = {
       `🔨 <b>ACCOUNT BANNED</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `❌ Your TeleMemer account has been <b>BANNED</b>.\n` +
+      `⏳ <b>Duration / Time Remaining:</b> <b>${sanitizeHtml(durationText)}</b>\n` +
       `📝 <b>Reason:</b> ${sanitizeHtml(pending.reason)}\n\n` +
-      `<i>All your coins, items, and progress have been preserved. You may appeal once every 24 hours using:</i>\n` +
+      `<i>All your coins, items, and progress have been preserved. You may submit an appeal once every 24 hours for this case using:</i>\n` +
       `<code>/appeal &lt;your explanation&gt;</code>`
     );
 
     await ctx.editMessageText(
       `🔨 <b>ACCOUNT BANNED:</b> <b>${sanitizeHtml(pending.targetUsername)}</b> (<code>${pending.targetId}</code>)\n` +
+      `⏳ <b>Duration:</b> <b>${sanitizeHtml(durationText)}</b>\n` +
       `📝 <b>Reason:</b> ${sanitizeHtml(pending.reason)}\n` +
       `✅ <i>All user data, coins, and items were preserved.</i>`,
       { parse_mode: 'HTML' }
@@ -206,4 +265,5 @@ export const ban = {
   }
 };
 
+export { parseDuration };
 export default ban;

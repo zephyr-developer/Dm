@@ -100,11 +100,74 @@ export function parseBet(input, wallet) {
   return { valid: true, bet };
 }
 
+export function parseDuration(str) {
+  if (!str || typeof str !== 'string') {
+    return { isDurationToken: false, durationMs: null, label: 'Permanent' };
+  }
+  const clean = str.trim().toLowerCase();
+
+  if (clean === 'perm' || clean === 'permanent' || clean === 'forever' || clean === 'inf' || clean === 'infinite') {
+    return { isDurationToken: true, durationMs: null, label: 'Permanent' };
+  }
+
+  const match = clean.match(/^(\d+(?:\.\d+)?)(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks|y|yr|yrs|year|years)$/);
+  if (!match) {
+    return { isDurationToken: false, durationMs: null, label: 'Permanent' };
+  }
+
+  const value = parseFloat(match[1]);
+  const unit = match[2];
+  if (!Number.isFinite(value) || value <= 0) {
+    return { isDurationToken: false, durationMs: null, label: 'Permanent' };
+  }
+
+  let multiplier = 0;
+  if (['m', 'min', 'mins', 'minute', 'minutes'].includes(unit)) {
+    multiplier = 60 * 1000;
+  } else if (['h', 'hr', 'hrs', 'hour', 'hours'].includes(unit)) {
+    multiplier = 3600 * 1000;
+  } else if (['d', 'day', 'days'].includes(unit)) {
+    multiplier = 86400 * 1000;
+  } else if (['w', 'wk', 'wks', 'week', 'weeks'].includes(unit)) {
+    multiplier = 604800 * 1000;
+  } else if (['y', 'yr', 'yrs', 'year', 'years'].includes(unit)) {
+    multiplier = 31536000 * 1000;
+  }
+
+  const durationMs = Math.floor(value * multiplier);
+  if (durationMs <= 0) {
+    return { isDurationToken: false, durationMs: null, label: 'Permanent' };
+  }
+
+  return {
+    isDurationToken: true,
+    durationMs,
+    label: formatDurationMs(durationMs)
+  };
+}
+
+export function formatDurationMs(ms) {
+  const num = Math.max(0, Math.floor(Number(ms) || 0));
+  if (!num) return 'Permanent';
+  const totalSeconds = Math.max(1, Math.ceil(num / 1000));
+  const totalHours = Math.round((num / 3600000) * 10) / 10;
+  const days = Math.floor(totalSeconds / 86400);
+  if (days >= 1 && num % 86400000 === 0) {
+    return `${days} Day${days === 1 ? '' : 's'} (${Math.round(num / 3600000)}h)`;
+  }
+  if (totalSeconds >= 86400) {
+    return `${formatTime(totalSeconds)} (${totalHours}h)`;
+  }
+  return formatTime(totalSeconds);
+}
+
 export default {
   formatCoins,
   formatNumber,
   progressBar,
   formatTime,
+  parseDuration,
+  formatDurationMs,
   randomBetween,
   pickRandom,
   sanitizeHtml,

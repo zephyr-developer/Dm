@@ -44,15 +44,35 @@ export const userRepo = {
     );
   },
 
-  async setAccountStatus(userId, status, reason = null, flaggedAmount = 0) {
+  async setAccountStatus(userId, status, reason = null, flaggedAmount = 0, banExpiresAt = null) {
     const validStatus = ['active', 'frozen', 'banned'].includes(status) ? status : 'active';
-    const flagged = Math.max(0, Math.floor(Number(flaggedAmount || 0)));
+    const flagged = validStatus === 'active' ? 0 : Math.max(0, Math.floor(Number(flaggedAmount || 0)));
+    const finalReason = validStatus === 'active' ? null : reason;
+    const finalExpiry = validStatus === 'active'
+      ? null
+      : (banExpiresAt && Number(banExpiresAt) > 0 ? Math.floor(Number(banExpiresAt)) : null);
+
+    // Per-case appeal cooldown: ALWAYS reset last_appeal_at = 0 when unbanning/unfreezing OR starting a new ban/freeze case
     const res = await query(
       `UPDATE users
-       SET account_status = $1, status_reason = $2, flagged_amount = $3, updated_at = NOW()
-       WHERE user_id = $4
+       SET account_status = $1,
+           status_reason = $2,
+           flagged_amount = $3,
+           ban_expires_at = $4,
+           last_appeal_at = 0,
+           updated_at = NOW()
+       WHERE user_id = $5
        RETURNING *;`,
-      [validStatus, reason, flagged, userId]
+      [validStatus, finalReason, flagged, finalExpiry, userId]
+    );
+    return res.rows[0] || null;
+  },
+
+  async setCanReplyOwner(userId, canReply) {
+    const val = canReply ? 1 : 0;
+    const res = await query(
+      `UPDATE users SET can_reply_owner = $1, updated_at = NOW() WHERE user_id = $2 RETURNING *;`,
+      [val, userId]
     );
     return res.rows[0] || null;
   },

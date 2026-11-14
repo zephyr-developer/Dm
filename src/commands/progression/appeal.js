@@ -20,8 +20,15 @@ export const appeal = {
 
   async execute(ctx) {
     const callerId = ctx.from.id;
-    const user = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
-    const status = String(user?.account_status || 'active').toLowerCase();
+    let user = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
+    let status = String(user?.account_status || 'active').toLowerCase();
+
+    if ((status === 'frozen' || status === 'banned') && user?.ban_expires_at && Number(user.ban_expires_at) > 0) {
+      if (Date.now() >= Number(user.ban_expires_at)) {
+        user = await userRepo.setAccountStatus(callerId, 'active', null, 0, null);
+        status = 'active';
+      }
+    }
 
     // 1. Account must actually be frozen or banned
     if (status === 'active') {

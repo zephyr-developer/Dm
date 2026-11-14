@@ -120,6 +120,8 @@ export async function initDatabase() {
         equipped_title VARCHAR(64) DEFAULT 'Newbie',
         custom_title VARCHAR(64) DEFAULT NULL,
         last_custom_title_at BIGINT DEFAULT 0,
+        ban_expires_at BIGINT DEFAULT NULL,
+        can_reply_owner INTEGER DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -213,6 +215,8 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS equipped_title VARCHAR(64) DEFAULT 'Newbie';`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_title VARCHAR(64) DEFAULT NULL;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_custom_title_at BIGINT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_expires_at BIGINT DEFAULT NULL;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS can_reply_owner INTEGER DEFAULT 0;`);
 
     await client.query('COMMIT');
     console.log('✅ PostgreSQL schemas initialized and verified (Zero-Drop policy enforced).');
@@ -295,6 +299,8 @@ function executeMemoryQuery(text, params = []) {
         equipped_title: 'Newbie',
         custom_title: null,
         last_custom_title_at: 0,
+        ban_expires_at: null,
+        can_reply_owner: 0,
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -307,6 +313,23 @@ function executeMemoryQuery(text, params = []) {
   }
 
   if (norm.startsWith('UPDATE USERS')) {
+    if (norm.includes('SET ACCOUNT_STATUS = $1, STATUS_REASON = $2, FLAGGED_AMOUNT = $3, BAN_EXPIRES_AT = $4, LAST_APPEAL_AT = 0')) {
+      const status = String(params[0]);
+      const reason = params[1] !== undefined ? params[1] : null;
+      const flaggedAmount = Number(params[2] || 0);
+      const banExpiresAt = params[3] !== null && params[3] !== undefined ? Number(params[3]) : null;
+      const userId = Number(params[4]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.account_status = status;
+        u.status_reason = reason;
+        u.flagged_amount = flaggedAmount;
+        u.ban_expires_at = banExpiresAt;
+        u.last_appeal_at = 0;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
     if (norm.includes('SET ACCOUNT_STATUS = $1, STATUS_REASON = $2, FLAGGED_AMOUNT = $3')) {
       const status = String(params[0]);
       const reason = params[1] !== undefined ? params[1] : null;
@@ -317,6 +340,18 @@ function executeMemoryQuery(text, params = []) {
         u.account_status = status;
         u.status_reason = reason;
         u.flagged_amount = flaggedAmount;
+        u.last_appeal_at = 0;
+        if (status === 'active') u.ban_expires_at = null;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET CAN_REPLY_OWNER = $1')) {
+      const canReply = Number(params[0] ? 1 : 0);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.can_reply_owner = canReply;
         u.updated_at = new Date();
         return { rows: [{ ...u }], rowCount: 1 };
       }

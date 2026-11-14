@@ -94,7 +94,9 @@ export async function sendOwnerSecurityAlert({
     .row()
     .text('💸 Remove Gained Coins & Unfreeze', `ac:clawback:${targetId}`)
     .row()
-    .text('✅ Unfreeze (Keep Coins)', `ac:unfreeze:${targetId}`);
+    .text('✅ Unfreeze (Keep Coins)', `ac:unfreeze:${targetId}`)
+    .row()
+    .text('💬 Ask User for Info', `ac:askinfo:${targetId}`);
 
   const text =
     `🚨 <b>ANTI-CHEAT AUTO-FREEZE TRIGGERED</b> 🚨\n` +
@@ -137,7 +139,9 @@ export async function sendAppealReviewCard(user, appealText) {
     .row()
     .text('💸 Remove Flagged Gain & Unfreeze', `ac:clawback:${targetId}`)
     .row()
-    .text('❌ Reject Appeal (Stay Locked)', `ac:reject:${targetId}`);
+    .text('❌ Reject Appeal (Stay Locked)', `ac:reject:${targetId}`)
+    .row()
+    .text('💬 Ask User for Info', `ac:askinfo:${targetId}`);
 
   const msg =
     `📨 <b>NEW ACCOUNT APPEAL RECEIVED</b>\n` +
@@ -321,9 +325,19 @@ export async function handleAntiCheatCallback(ctx) {
   const originalText = ctx.callbackQuery?.message?.text || '';
   const safeBase = sanitizeHtml(originalText);
 
+  if (action === 'askinfo') {
+    await ctx.reply(
+      `💬 <b>Contact ${targetHandle}</b> (<code>${targetUserId}</code>)\n` +
+      `Send the following command to DM them and unlock their <code>/replyowner</code> response:\n` +
+      `<code>/contact ${targetUserId} Please explain...</code>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+    return ctx.answerCallbackQuery({ text: `Use /contact ${targetUserId} <message>` }).catch(() => {});
+  }
+
   if (action === 'ban') {
     const reason = target.status_reason || 'Banned by Bot Owner during Security Review';
-    await userRepo.setAccountStatus(targetUserId, 'banned', reason, Number(target.flagged_amount || 0));
+    await userRepo.setAccountStatus(targetUserId, 'banned', reason, Number(target.flagged_amount || 0), target.ban_expires_at || null);
 
     await sendUserDm(
       targetUserId,
@@ -331,7 +345,7 @@ export async function handleAntiCheatCallback(ctx) {
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `❌ Your TeleMemer account has been <b>BANNED</b> by the Bot Owner.\n` +
       `📝 <b>Reason:</b> ${sanitizeHtml(reason)}\n\n` +
-      `<i>All your data, coins, and items have been preserved. You may submit an appeal once every 24 hours using:</i>\n` +
+      `<i>All your data, coins, and items have been preserved. You may submit an appeal once every 24 hours for this case using:</i>\n` +
       `<code>/appeal &lt;your explanation&gt;</code>`
     );
 
@@ -341,6 +355,30 @@ export async function handleAntiCheatCallback(ctx) {
     ).catch(() => {});
 
     return ctx.answerCallbackQuery({ text: '🔨 User banned (data preserved).' }).catch(() => {});
+  }
+
+  if (action === 'keepban') {
+    const currentStatus = String(target.account_status || 'banned').toUpperCase();
+    const keepReason = target.status_reason || 'Restriction upheld by Bot Owner after inquiry';
+
+    if (currentStatus === 'ACTIVE') {
+      await userRepo.setAccountStatus(targetUserId, 'banned', keepReason, Number(target.flagged_amount || 0), null);
+    }
+
+    await sendUserDm(
+      targetUserId,
+      `🔨 <b>RESTRICTION UPHELD</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🔒 After reviewing your response, the Bot Owner decided to keep your account <b>${currentStatus === 'FROZEN' ? 'FROZEN' : 'BANNED'}</b>.\n` +
+      `📝 <b>Reason:</b> ${sanitizeHtml(keepReason)}`
+    );
+
+    await ctx.editMessageText(
+      `${safeBase}\n\n🔨 <b>ACTION TAKEN:</b> ${targetHandle} (<code>${targetUserId}</code>) remains <b>${currentStatus === 'FROZEN' ? 'FROZEN' : 'BANNED'}</b>.`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
+    return ctx.answerCallbackQuery({ text: '🔨 Restriction upheld.' }).catch(() => {});
   }
 
   if (action === 'clawback') {
@@ -363,13 +401,15 @@ export async function handleAntiCheatCallback(ctx) {
       });
     }
 
-    await userRepo.setAccountStatus(targetUserId, 'active', null, 0);
+    await userRepo.setAccountStatus(targetUserId, 'active', null, 0, null);
+    const unfreezeReason = 'Your account was unfrozen after removing the flagged illegitimate coins.';
 
     await sendUserDm(
       targetUserId,
       `💸 <b>ACCOUNT RESTORED (FLAGGED GAIN REMOVED)</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
-      `✅ Your TeleMemer account has been <b>UNFROZEN</b> by the Bot Owner.\n` +
+      `✅ Your TeleMemer account status has been restored to <b>ACTIVE</b>!\n` +
+      `📝 <b>Admin Note / Reason:</b> ${unfreezeReason}\n` +
       `💰 <b>Removed Illegitimate Gain:</b> ${formatCoins(totalRemoved)}\n` +
       `👛 <b>Remaining Wallet:</b> ${formatCoins(currentWallet - deductWallet)} | 🏦 <b>Bank:</b> ${formatCoins(currentBank - deductBank)}\n\n` +
       `<i>Please play fairly to avoid future automatic freezes.</i>`
@@ -384,13 +424,15 @@ export async function handleAntiCheatCallback(ctx) {
   }
 
   if (action === 'unfreeze') {
-    await userRepo.setAccountStatus(targetUserId, 'active', null, 0);
+    await userRepo.setAccountStatus(targetUserId, 'active', null, 0, null);
+    const unfreezeReason = 'Your account was unfrozen by the Owner.';
 
     await sendUserDm(
       targetUserId,
-      `✅ <b>ACCOUNT APPROVED &amp; UNFROZEN</b>\n` +
+      `🎉 <b>ACCOUNT RESTORED / UNBANNED</b> 🎉\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
-      `🎉 Good news! The Bot Owner reviewed your account and cleared all restrictions.\n` +
+      `✅ Your TeleMemer account status has been restored to <b>ACTIVE</b>!\n` +
+      `📝 <b>Admin Note / Reason:</b> ${unfreezeReason}\n\n` +
       `You can now use all TeleMemer commands normally!`
     );
 
@@ -411,7 +453,7 @@ export async function handleAntiCheatCallback(ctx) {
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `Your appeal was reviewed by the Bot Owner and <b>REJECTED</b>.\n` +
       `🔒 Your account remains <b>${sanitizeHtml(currentStatus)}</b>.\n\n` +
-      `⏳ You must wait <b>24 hours</b> from your submission before appealing again.`
+      `⏳ You must wait <b>24 hours</b> from your submission before appealing again on this case.`
     );
 
     await ctx.editMessageText(
@@ -468,7 +510,7 @@ export async function handleReportModerationCallback(ctx) {
 
   if (action === 'freeze') {
     const reason = 'Frozen under investigation following player report';
-    await userRepo.setAccountStatus(targetUserId, 'frozen', reason, Number(target.flagged_amount || 0));
+    await userRepo.setAccountStatus(targetUserId, 'frozen', reason, Number(target.flagged_amount || 0), null);
 
     await sendUserDm(
       targetUserId,
@@ -476,7 +518,7 @@ export async function handleReportModerationCallback(ctx) {
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `🚨 Your TeleMemer account has been <b>FROZEN</b> by the Bot Owner.\n` +
       `📝 <b>Reason:</b> ${sanitizeHtml(reason)}\n\n` +
-      `<i>All your coins and items are preserved. You may submit an appeal once every 24 hours using:</i>\n` +
+      `<i>All your coins and items are preserved. You may submit an appeal once every 24 hours for this case using:</i>\n` +
       `<code>/appeal &lt;your explanation&gt;</code>`
     );
 
@@ -490,7 +532,7 @@ export async function handleReportModerationCallback(ctx) {
 
   if (action === 'ban') {
     const reason = 'Banned for violating rules (Reported for RMT/Abuse)';
-    await userRepo.setAccountStatus(targetUserId, 'banned', reason, Number(target.flagged_amount || 0));
+    await userRepo.setAccountStatus(targetUserId, 'banned', reason, Number(target.flagged_amount || 0), null);
 
     await sendUserDm(
       targetUserId,
