@@ -122,6 +122,7 @@ export async function initDatabase() {
         last_custom_title_at BIGINT DEFAULT 0,
         ban_expires_at BIGINT DEFAULT NULL,
         can_reply_owner INTEGER DEFAULT 0,
+        ultimate_expires_at BIGINT DEFAULT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -217,6 +218,7 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_custom_title_at BIGINT DEFAULT 0;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_expires_at BIGINT DEFAULT NULL;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS can_reply_owner INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ultimate_expires_at BIGINT DEFAULT NULL;`);
 
     await client.query('COMMIT');
     console.log('✅ PostgreSQL schemas initialized and verified (Zero-Drop policy enforced).');
@@ -301,6 +303,7 @@ function executeMemoryQuery(text, params = []) {
         last_custom_title_at: 0,
         ban_expires_at: null,
         can_reply_owner: 0,
+        ultimate_expires_at: null,
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -352,6 +355,16 @@ function executeMemoryQuery(text, params = []) {
       const u = memoryDb.users.get(userId);
       if (u) {
         u.can_reply_owner = canReply;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET ULTIMATE_EXPIRES_AT = $1')) {
+      const exp = params[0] === null || params[0] === undefined ? null : Number(params[0]);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.ultimate_expires_at = exp;
         u.updated_at = new Date();
         return { rows: [{ ...u }], rowCount: 1 };
       }

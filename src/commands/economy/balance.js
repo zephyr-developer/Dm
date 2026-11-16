@@ -30,12 +30,14 @@ async function buildBalanceCard(targetUser, viewerId, viewerIsOwner = false) {
   const bankBar = progressBar(bank, bankMax, 8);
   const isPremium = Number(targetUser.premium_until || 0) > Date.now();
   const premiumBadge = isPremium ? ' 💎 <b>[PREMIUM MEMBER]</b>' : '';
+  const isUltimate = await userRepo.isUltimateGambler(targetUser);
+  const ultimateBadge = isUltimate ? ' 🎰 <b>[ULTIMATE GAMBLER]</b>' : '';
 
   const targetHandle = targetUser.username
     ? `@${sanitizeHtml(targetUser.username)}`
     : sanitizeHtml(targetUser.first_name || 'Player');
 
-  const card = `💰 <b>${targetHandle}'s Balance</b>${premiumBadge}\n` +
+  const card = `💰 <b>${targetHandle}'s Balance</b>${ultimateBadge}${premiumBadge}\n` +
     `👤 <b>Holder:</b> ${sanitizeHtml(targetUser.first_name)}\n` +
     `🏷️ <b>Title:</b> 「 ${sanitizeHtml(effectiveTitle)} 」\n\n` +
     `👛 <b>Wallet:</b> ${formatCoins(wallet)}\n` +

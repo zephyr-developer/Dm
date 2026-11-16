@@ -77,6 +77,39 @@ export const userRepo = {
     return res.rows[0] || null;
   },
 
+  async setUltimateGambler(userId, expiresAt = null) {
+    let val = null;
+    if (Number(expiresAt) === -1) {
+      val = -1;
+    } else if (expiresAt !== null && expiresAt !== undefined && Number(expiresAt) > 0) {
+      val = Math.floor(Number(expiresAt));
+    }
+    const res = await query(
+      `UPDATE users SET ultimate_expires_at = $1, updated_at = NOW() WHERE user_id = $2 RETURNING *;`,
+      [val, userId]
+    );
+    return res.rows[0] || null;
+  },
+
+  async isUltimateGambler(userOrId) {
+    if (!userOrId) return false;
+    const user = typeof userOrId === 'object' ? userOrId : await this.getUser(Number(userOrId));
+    if (!user) return false;
+
+    const exp = user.ultimate_expires_at === null || user.ultimate_expires_at === undefined
+      ? 0
+      : Number(user.ultimate_expires_at);
+
+    if (exp === -1) return true;
+    if (exp > 0 && exp > Date.now()) return true;
+
+    if (exp > 0 && Date.now() >= exp) {
+      user.ultimate_expires_at = null;
+      await this.setUltimateGambler(user.user_id, null).catch(() => {});
+    }
+    return false;
+  },
+
   async setLastAppealAt(userId, timestamp = Date.now()) {
     const res = await query(
       `UPDATE users SET last_appeal_at = $1, updated_at = NOW() WHERE user_id = $2 RETURNING *;`,
@@ -218,22 +251,28 @@ export const userRepo = {
     }
 
     if (!skipAntiCheat && resultData) {
-      const { evaluateTransactionAnomaly } = await import('../services/antiCheat.js');
-      const acResult = await evaluateTransactionAnomaly({
-        user: resultData,
-        oldWallet: resultData.oldWallet,
-        oldBank: resultData.oldBank,
-        newWallet: resultData.wallet,
-        newBank: resultData.bank,
-        walletDelta: Number(walletDelta || 0),
-        bankDelta: Number(bankDelta || 0),
-        sourceCommand,
-        details
-      });
-      if (acResult?.triggered && acResult.user) {
-        resultData.account_status = acResult.user.account_status;
-        resultData.status_reason = acResult.user.status_reason;
-        resultData.flagged_amount = acResult.user.flagged_amount;
+      const gamblingSources = new Set(['/blackjack', '/slots', '/scratch', '/highlow']);
+      const isGambleSource = gamblingSources.has(String(sourceCommand || '').trim().toLowerCase());
+      const isUltimate = isGambleSource ? await this.isUltimateGambler(resultData) : false;
+
+      if (!(isGambleSource && isUltimate)) {
+        const { evaluateTransactionAnomaly } = await import('../services/antiCheat.js');
+        const acResult = await evaluateTransactionAnomaly({
+          user: resultData,
+          oldWallet: resultData.oldWallet,
+          oldBank: resultData.oldBank,
+          newWallet: resultData.wallet,
+          newBank: resultData.bank,
+          walletDelta: Number(walletDelta || 0),
+          bankDelta: Number(bankDelta || 0),
+          sourceCommand,
+          details
+        });
+        if (acResult?.triggered && acResult.user) {
+          resultData.account_status = acResult.user.account_status;
+          resultData.status_reason = acResult.user.status_reason;
+          resultData.flagged_amount = acResult.user.flagged_amount;
+        }
       }
     }
 

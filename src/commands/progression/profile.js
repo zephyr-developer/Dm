@@ -22,6 +22,19 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
 
   const isPrem = await userRepo.isPremium(targetUserId);
   const premRemaining = await userRepo.getPremiumRemaining(targetUserId);
+  const isUltimate = await userRepo.isUltimateGambler(user);
+
+  let ultimateLine = '';
+  let ultimateTitleTag = '';
+  if (isUltimate) {
+    ultimateTitleTag = ' 🎰 <b>[ULTIMATE GAMBLER]</b>';
+    const isPermUltimate = Number(user.ultimate_expires_at) === -1;
+    const ultRemSecs = isPermUltimate
+      ? 0
+      : Math.max(1, Math.ceil((Number(user.ultimate_expires_at) - Date.now()) / 1000));
+    const ultDurationText = isPermUltimate ? 'Permanent' : `Expires in ${formatTime(ultRemSecs)}`;
+    ultimateLine = `🎰 <b>Elite Status:</b> Ultimate Gambler (${ultDurationText})\n`;
+  }
 
   let premiumBadge = '';
   if (isPrem) {
@@ -39,9 +52,10 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
 
   const isPassive = Number(user.passive_mode) === 1;
 
-  const card = `📜 <b>Player Profile: ${sanitizeHtml(user.first_name)}</b>\n` +
+  const card = `📜 <b>Player Profile: ${sanitizeHtml(user.first_name)}</b>${ultimateTitleTag}\n` +
     (user.username ? `👤 <i>@${sanitizeHtml(user.username)}</i>\n` : '') +
     `🏷️ <b>Title:</b> 「 ${sanitizeHtml(effectiveTitle)} 」\n` +
+    ultimateLine +
     `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
     premiumBadge +
     `⭐ <b>Level:</b> ${user.level} (Prestige: <b>Tier ${user.prestige}</b>)\n` +

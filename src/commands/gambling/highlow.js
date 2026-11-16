@@ -18,6 +18,7 @@ export const highlow = {
   async execute(ctx) {
     const userId = ctx.from.id;
     const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const isUltimate = await userRepo.isUltimateGambler(user);
 
     const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
     let bet = 0;
@@ -34,7 +35,7 @@ export const highlow = {
       }
 
       bet = parsedBet;
-      if (bet > MAX_GAMBLE_BET) {
+      if (!isUltimate && bet > MAX_GAMBLE_BET) {
         bet = MAX_GAMBLE_BET;
         wasClamped = true;
       }
@@ -52,7 +53,7 @@ export const highlow = {
     const hint = randomBetween(1, 100);
     const secret = randomBetween(1, 100);
 
-    activeHLSessions.set(userId, { hint, secret, bet });
+    activeHLSessions.set(userId, { hint, secret, bet, isUltimate });
 
     const keyboard = new InlineKeyboard()
       .text('⬆️ Higher', `highlow:higher:${userId}`)
@@ -61,12 +62,14 @@ export const highlow = {
       .row()
       .text('⚠️', 'gamble:warning');
 
+    const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
+    const limitWord = isUltimate ? 'No Limit' : 'Max: 100M';
     const betNotice = bet > 0
       ? `💰 <b>Active Bet:</b> ${formatCoins(bet)} (Win: <b>1.4x</b> | Jackpot: <b>5x</b>)${clampNotice}\n\n`
-      : `🎮 <b>Free Play Mode</b> (Bet optional: <code>/highlow &lt;amount&gt;</code>, Max: 100M)\n\n`;
+      : `🎮 <b>Free Play Mode</b> (Bet optional: <code>/highlow &lt;amount&gt;</code>, ${limitWord})\n\n`;
 
-    const prompt = `🎲 <b>High-Low Mystery Number</b>\n\n` +
+    const prompt = `${eliteBanner}🎲 <b>High-Low Mystery Number</b>\n\n` +
       betNotice +
       `The visible hint number is: <b>[ ${hint} ]</b>\n\n` +
       `Is the secret mystery number (1–100) <b>Higher</b>, <b>Lower</b>, or an exact <b>Jackpot</b> match?\n` +
@@ -90,7 +93,8 @@ export const highlow = {
     }
 
     activeHLSessions.delete(targetUserId);
-    let { hint, secret, bet } = session;
+    let { hint, secret, bet, isUltimate } = session;
+    const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
     const luckInfo = await getLuckBreakdown(targetUserId);
 
     // LuckEngine: Only tilt for owner/custom_luck >= 50 so standard casino edge stays negative
@@ -151,7 +155,7 @@ export const highlow = {
       const updatedWallet = updatedUser?.wallet || 0;
       const luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
-      const msg = `${winTitle}${luckTag}\n\n` +
+      const msg = `${eliteBanner}${winTitle}${luckTag}\n\n` +
         `• Hint Number: <b>${hint}</b>\n` +
         `• Secret Number: <b>${secret}</b>\n` +
         `• Your Guess: <i>${choice.toUpperCase()}</i>\n\n` +
@@ -175,7 +179,7 @@ export const highlow = {
         ? `\n⚖️ <i>Exact tie (${hint}) goes to the House!</i>`
         : '';
 
-      const msg = `💀 <b>WRONG GUESS!</b>${tieNotice}\n\n` +
+      const msg = `${eliteBanner}💀 <b>WRONG GUESS!</b>${tieNotice}\n\n` +
         `• Hint Number: <b>${hint}</b>\n` +
         `• Secret Number was: <b>${secret}</b>\n` +
         `• Your Guess: <i>${choice.toUpperCase()}</i>\n\n` +

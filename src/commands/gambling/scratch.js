@@ -92,6 +92,7 @@ export const scratch = {
   async execute(ctx) {
     const userId = ctx.from.id;
     const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const isUltimate = await userRepo.isUltimateGambler(user);
 
     if (activeScratchCards.has(userId)) {
       return ctx.reply('🎫 You already have an active scratchcard ticket! Finish scratching it first.');
@@ -100,9 +101,11 @@ export const scratch = {
     const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
 
     if (!betStr) {
+      const limitLabel = isUltimate ? '🎰 No Limit (Ultimate Gambler)' : 'Max Bet: 🪙 100,000,000';
       return ctx.reply(
+        (isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '') +
         `🎫 <b>Scratchcard Lottery</b>\n` +
-        `Usage: <code>/scratch &lt;bet|half|all&gt;</code> (Max Bet: 🪙 100,000,000)\n\n` +
+        `Usage: <code>/scratch &lt;bet|half|all&gt;</code> (${limitLabel})\n\n` +
         `Pick 3 mystery tiles on the 3x3 grid! Watch out for the 💀 Bomb — hitting it forfeits your card.\n` +
         `Max payout multiplier: <b>5x</b>\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
@@ -124,7 +127,7 @@ export const scratch = {
 
     let bet = parsedBet;
     let wasClamped = false;
-    if (bet > MAX_GAMBLE_BET) {
+    if (!isUltimate && bet > MAX_GAMBLE_BET) {
       bet = MAX_GAMBLE_BET;
       wasClamped = true;
     }
@@ -143,6 +146,7 @@ export const scratch = {
     const session = {
       userId,
       bet,
+      isUltimate,
       wasClamped,
       isGodLuck,
       board,
@@ -153,8 +157,9 @@ export const scratch = {
 
     const keyboard = buildScratchKeyboard(userId, board, []);
 
+    const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
-    const prompt = `🎫 <b>TeleMemer Lucky Scratchcard</b>\n` +
+    const prompt = `${eliteBanner}🎫 <b>TeleMemer Lucky Scratchcard</b>\n` +
       `Ticket Cost: <b>${formatCoins(bet)}</b>${clampNotice}\n` +
       (luckInfo.totalBonus > 0 ? `🍀 <i>Luck Active: +${luckInfo.totalBonus}%</i>\n\n` : '\n') +
       `Scratch <b>3 tiles</b> below by clicking the ❓ boxes. Beware the 💀 Bomb!`;
@@ -189,6 +194,8 @@ export const scratch = {
     session.revealed.push(clickedIdx);
     const value = session.board[clickedIdx];
 
+    const eliteBanner = session.isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
+
     // Hit 💀 Bomb: ends game immediately & forfeits remaining scratches/winnings
     if (value === 'SKULL') {
       activeScratchCards.delete(targetUserId);
@@ -196,7 +203,7 @@ export const scratch = {
       const updatedUser = await userRepo.getUser(targetUserId);
       const updatedWallet = updatedUser?.wallet || 0;
 
-      const bustMsg = `💀 <b>BOOM! YOU HIT THE BOMB!</b>\n\n` +
+      const bustMsg = `${eliteBanner}💀 <b>BOOM! YOU HIT THE BOMB!</b>\n\n` +
         `The cursed bomb detonated and forfeited your remaining scratches & winnings!\n` +
         `💸 <b>Lost:</b> ${formatCoins(session.bet)}\n` +
         `👛 <b>Wallet:</b> ${formatCoins(updatedWallet)}`;
@@ -238,7 +245,7 @@ export const scratch = {
         ? `📈 <b>Net Profit:</b> +${formatCoins(netProfit)}`
         : `📉 <b>Net Loss:</b> -${formatCoins(Math.abs(netProfit))}`;
 
-      const summaryMsg = `${winTitle}\n\n` +
+      const summaryMsg = `${eliteBanner}${winTitle}\n\n` +
         `• Scratched Multipliers: ${session.multipliers.map(m => `<b>${m}x</b>`).join(' + ')} = <b>${totalMult}x</b>${capTag}\n` +
         (payout > 0 ? `💰 <b>Total Payout:</b> +${formatCoins(payout)}\n` : `💸 <b>Lost:</b> ${formatCoins(session.bet)}\n`) +
         `${netText}\n` +
@@ -257,7 +264,7 @@ export const scratch = {
     const keyboard = buildScratchKeyboard(targetUserId, session.board, session.revealed);
     const scratchesLeft = 3 - session.revealed.length;
 
-    const continueMsg = `🎫 <b>TeleMemer Lucky Scratchcard</b>\n` +
+    const continueMsg = `${eliteBanner}🎫 <b>TeleMemer Lucky Scratchcard</b>\n` +
       `Ticket Cost: <b>${formatCoins(session.bet)}</b>\n\n` +
       `Revealed: ${session.multipliers.map(m => `<b>${m}x</b>`).join(', ')}\n` +
       `👉 <b>${scratchesLeft} scratch${scratchesLeft > 1 ? 'es' : ''} remaining!</b> Pick another box:`;

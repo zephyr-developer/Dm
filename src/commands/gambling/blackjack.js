@@ -72,6 +72,7 @@ export const blackjack = {
   async execute(ctx) {
     const userId = ctx.from.id;
     const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const isUltimate = await userRepo.isUltimateGambler(user);
 
     if (activeGames.has(userId)) {
       return ctx.reply('🃏 You already have an active Blackjack hand! Finish it with the buttons on your game table.');
@@ -80,9 +81,11 @@ export const blackjack = {
     const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
 
     if (!betStr) {
+      const limitLabel = isUltimate ? '🎰 No Limit (Ultimate Gambler)' : 'Max Bet: 🪙 100,000,000';
       return ctx.reply(
+        (isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '') +
         `🃏 <b>Blackjack (21)</b>\n` +
-        `Usage: <code>/bj &lt;bet|half|all&gt;</code> (Max Bet: 🪙 100,000,000)\n\n` +
+        `Usage: <code>/bj &lt;bet|half|all&gt;</code> (${limitLabel})\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         { parse_mode: 'HTML' }
       );
@@ -102,7 +105,7 @@ export const blackjack = {
 
     let bet = parsedBet;
     let wasClamped = false;
-    if (bet > MAX_GAMBLE_BET) {
+    if (!isUltimate && bet > MAX_GAMBLE_BET) {
       bet = MAX_GAMBLE_BET;
       wasClamped = true;
     }
@@ -126,6 +129,7 @@ export const blackjack = {
     }
 
     const playerScore = calculateHand(playerCards);
+    const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
 
     // Check Natural Blackjack (21 on 2 cards)
@@ -137,7 +141,7 @@ export const blackjack = {
         details: 'Natural Blackjack 3:2 Payout'
       });
 
-      const winMsg = `🃏 <b>BLACKJACK! NATURAL 21!</b> 🎉${clampNotice}\n\n` +
+      const winMsg = `${eliteBanner}🃏 <b>BLACKJACK! NATURAL 21!</b> 🎉${clampNotice}\n\n` +
         `👤 <b>Your Hand:</b> ${renderHand(playerCards)} (Score: <b>21</b>)\n` +
         `🤖 <b>Dealer Hand:</b> ${renderHand(dealerCards)} (Score: <b>${calculateHand(dealerCards)}</b>)\n\n` +
         `💰 <b>Payout (3:2):</b> +${formatCoins(payout)}!\n` +
@@ -153,6 +157,7 @@ export const blackjack = {
     const gameState = {
       userId,
       bet,
+      isUltimate,
       deck,
       playerCards,
       dealerCards
@@ -163,13 +168,13 @@ export const blackjack = {
       .text('🃏 Hit', `blackjack:hit:${userId}`)
       .text('🛑 Stand', `blackjack:stand:${userId}`);
 
-    // Allow double down only if player has enough wallet AND total bet stays within MAX_GAMBLE_BET
-    if (afterBetUser.wallet >= bet && bet * 2 <= MAX_GAMBLE_BET) {
+    // Allow double down if player has enough wallet AND either Ultimate Gambler or within MAX_GAMBLE_BET
+    if (afterBetUser.wallet >= bet && (isUltimate || bet * 2 <= MAX_GAMBLE_BET)) {
       keyboard.text('💰 Double Down', `blackjack:double:${userId}`);
     }
     keyboard.row().text('⚠️', 'gamble:warning');
 
-    const tableMsg = `🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(bet)})${clampNotice}\n\n` +
+    const tableMsg = `${eliteBanner}🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(bet)})${clampNotice}\n\n` +
       `👤 <b>Your Hand:</b> ${renderHand(playerCards)} (Score: <b>${playerScore}</b>)\n` +
       `🤖 <b>Dealer Hand:</b> ${renderHand(dealerCards, true)} (Score: <b>?</b>)\n\n` +
       `<i>What is your move?</i>`;
@@ -208,9 +213,11 @@ export const blackjack = {
       game.playerCards.push(drawnCard);
       const score = calculateHand(game.playerCards);
 
+      const eliteBanner = game.isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
+
       if (score > 21) {
         activeGames.delete(targetUserId);
-        const bustMsg = `💥 <b>BUSTED! (Score: ${score})</b>\n\n` +
+        const bustMsg = `${eliteBanner}💥 <b>BUSTED! (Score: ${score})</b>\n\n` +
           `👤 <b>Your Hand:</b> ${renderHand(game.playerCards)}\n` +
           `🤖 <b>Dealer Hand:</b> ${renderHand(game.dealerCards)} (Score: <b>${calculateHand(game.dealerCards)}</b>)\n\n` +
           `💸 You lost your bet of <b>${formatCoins(game.bet)}</b>.\n` +
@@ -229,7 +236,7 @@ export const blackjack = {
         .row()
         .text('⚠️', 'gamble:warning');
 
-      const updatedMsg = `🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(game.bet)})\n\n` +
+      const updatedMsg = `${eliteBanner}🃏 <b>Blackjack Table</b> (Bet: ${formatCoins(game.bet)})\n\n` +
         `👤 <b>Your Hand:</b> ${renderHand(game.playerCards)} (Score: <b>${score}</b>)\n` +
         `🤖 <b>Dealer Hand:</b> ${renderHand(game.dealerCards, true)} (Score: <b>?</b>)\n\n` +
         `<i>What is your move?</i>`;
@@ -245,7 +252,7 @@ export const blackjack = {
     // ACTION 2: DOUBLE DOWN
     // ==========================================
     if (action === 'double') {
-      if (game.bet * 2 > MAX_GAMBLE_BET) {
+      if (!game.isUltimate && game.bet * 2 > MAX_GAMBLE_BET) {
         return ctx.answerCallbackQuery({
           text: `❌ Double Down exceeds the 🪙 100,000,000 max table limit!`,
           show_alert: true
@@ -276,10 +283,11 @@ export const blackjack = {
       game.playerCards.push(doubleCard);
 
       const score = calculateHand(game.playerCards);
+      const eliteBanner = game.isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
       if (score > 21) {
         activeGames.delete(targetUserId);
         const updatedUser = await userRepo.getUser(targetUserId);
-        const bustMsg = `💥 <b>BUSTED ON DOUBLE DOWN! (Score: ${score})</b>\n\n` +
+        const bustMsg = `${eliteBanner}💥 <b>BUSTED ON DOUBLE DOWN! (Score: ${score})</b>\n\n` +
           `👤 <b>Your Hand:</b> ${renderHand(game.playerCards)}\n` +
           `🤖 <b>Dealer Hand:</b> ${renderHand(game.dealerCards)} (Score: <b>${calculateHand(game.dealerCards)}</b>)\n\n` +
           `💸 You lost your doubled bet of <b>${formatCoins(game.bet)}</b>.\n` +
@@ -358,8 +366,9 @@ async function resolveDealerTurn(ctx, game, targetUserId) {
 
   const updatedUser = await userRepo.getUser(targetUserId);
   const updatedWallet = updatedUser?.wallet || 0;
+  const eliteBanner = game.isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
 
-  const finalMsg = `${outcomeTitle}\n\n` +
+  const finalMsg = `${eliteBanner}${outcomeTitle}\n\n` +
     `👤 <b>Your Hand:</b> ${renderHand(game.playerCards)} (Score: <b>${playerScore}</b>)\n` +
     `🤖 <b>Dealer Hand:</b> ${renderHand(game.dealerCards)} (Score: <b>${dealerScore}</b>)\n\n` +
     (payout > 0 ? `💰 <b>Payout:</b> +${formatCoins(payout)}\n` : `💸 Lost bet of <b>${formatCoins(game.bet)}</b>\n`) +

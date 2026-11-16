@@ -28,13 +28,16 @@ export const slots = {
   async execute(ctx) {
     const userId = ctx.from.id;
     const user = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
+    const isUltimate = await userRepo.isUltimateGambler(user);
 
     const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
 
     if (!betStr) {
+      const limitLabel = isUltimate ? '🎰 No Limit (Ultimate Gambler)' : 'Max Bet: 🪙 100,000,000';
       return ctx.reply(
+        (isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '') +
         `🎰 <b>TeleMemer Casino Slots</b>\n` +
-        `Usage: <code>/slots &lt;bet|half|all&gt;</code> (Max Bet: 🪙 100,000,000)\n\n` +
+        `Usage: <code>/slots &lt;bet|half|all&gt;</code> (${limitLabel})\n\n` +
         `<b>Payout Multipliers:</b>\n` +
         `• 🐸 🐸 🐸 = <b>25x JACKPOT!</b>\n` +
         `• 💎 💎 💎 = <b>10x Mega Win</b>\n` +
@@ -62,7 +65,7 @@ export const slots = {
 
     let bet = parsedBet;
     let wasClamped = false;
-    if (bet > MAX_GAMBLE_BET) {
+    if (!isUltimate && bet > MAX_GAMBLE_BET) {
       bet = MAX_GAMBLE_BET;
       wasClamped = true;
     }
@@ -131,9 +134,10 @@ export const slots = {
     const updatedUser = await userRepo.getUser(userId);
     const updatedWallet = updatedUser?.wallet || 0;
     const luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
+    const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
 
-    const display = `🎰 <b>SLOT REELS SPINNING...</b>${luckTag}${clampNotice}\n\n` +
+    const display = `${eliteBanner}🎰 <b>SLOT REELS SPINNING...</b>${luckTag}${clampNotice}\n\n` +
       `╔═══════════════╗\n` +
       `║   <b>${s1}  |  ${s2}  |  ${s3}</b>   ║\n` +
       `╚═══════════════╝\n\n` +
