@@ -238,7 +238,10 @@ export async function loadCommands() {
                 await cooldownRepo.applyEffectiveCooldown(userId, command.name, command.cooldown);
               }
             } catch (execErr) {
-              console.error(`[TeleMemer] Error executing /${command.name}:`, execErr.message);
+              console.error(
+                `[TeleMemer] Error executing /${command.name} (user=${userId}, chat=${ctx.chat?.id}, match=${ctx.match || ''}):`,
+                execErr?.stack || execErr?.message || execErr
+              );
               if (!hasReplied) {
                 await origReply(`⚠️ An error occurred while executing /${command.name}. Please try again later.`).catch(() => {});
               }
@@ -394,7 +397,10 @@ function registerDefaultCommands() {
       try {
         await handler(ctx);
       } catch (err) {
-        console.error(`[TeleMemer] Error handling callback ${data}:`, err.message);
+        console.error(
+          `[TeleMemer] Error handling callback ${data} (user=${ctx.from?.id}, chat=${ctx.chat?.id}):`,
+          err?.stack || err?.description || err?.message || err
+        );
         await ctx.answerCallbackQuery({ text: '⚠️ Something went wrong processing your choice.' }).catch(() => {});
       }
       return;

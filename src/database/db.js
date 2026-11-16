@@ -28,7 +28,8 @@ const memoryDb = {
   fights: [],
   fightAutoInc: 1,
   fight_reputations: new Set(), // key: `${giverId}:${receiverId}`
-  fight_daily_pairs: new Map() // key: `${dayKey}:${pairKey}` -> count
+  fight_daily_pairs: new Map(), // key: `${dayKey}:${pairKey}` -> count
+  active_fights: new Map() // key: session_id -> { session_id, state, updated_at }
 };
 
 if (isPostgresConfigured) {
@@ -246,6 +247,15 @@ export async function initDatabase() {
       );
     `);
 
+    // 12. Active Fights & Lobbies Table (Persistent across restarts/workers)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS active_fights (
+        session_id VARCHAR(64) PRIMARY KEY,
+        state JSONB NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+    `);
+
     // Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_group_members_chat ON group_members(chat_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_networth ON users((wallet + bank) DESC);`);
@@ -253,6 +263,7 @@ export async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_currency_logs_user_time ON currency_logs(user_id, created_at DESC);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_fights_created_at ON fights(created_at DESC);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_fight_score ON users(fight_score DESC, fight_rep DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_active_fights_updated ON active_fights(updated_at DESC);`);
 
     // Auto-migration checks for backwards-compatibility
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until BIGINT DEFAULT 0;`);
@@ -297,7 +308,14 @@ export const initDb = initDatabase;
 function executeMemoryQuery(text, params = []) {
   const norm = text.replace(/\s+/g, ' ').trim().toUpperCase();
 
-  if (norm.startsWith('BEGIN') || norm.startsWith('COMMIT') || norm.startsWith('ROLLBACK')) {
+  if (
+    norm.startsWith('BEGIN') ||
+    norm.startsWith('COMMIT') ||
+    norm.startsWith('ROLLBACK') ||
+    norm.startsWith('ALTER TABLE') ||
+    norm.startsWith('CREATE TABLE') ||
+    norm.startsWith('CREATE INDEX')
+  ) {
     return { rows: [], rowCount: 0 };
   }
 
@@ -648,11 +666,19 @@ function executeMemoryQuery(text, params = []) {
     return { rows: list.slice(0, limit), rowCount: Math.min(list.length, limit) };
   }
 
-  if (norm.includes('FROM USERS') && norm.includes('WHERE FIGHT_BUCKET_ID = $1')) {
-    const bucketId = String(params[0]);
+  if (norm.includes('FROM USERS') && (norm.includes('WHERE FIGHT_BUCKET_ID = $1') || norm.includes('WHERE FIGHT_SCORE > 0'))) {
+    const bucketId = params[0] ? String(params[0]) : null;
+    const callerId = params[1] !== undefined && params[1] !== null ? Number(params[1]) : null;
     const list = Array.from(memoryDb.users.values())
-      .filter(u => (u.fight_bucket_id || 'default_bucket') === bucketId || Number(u.fight_wins || 0) + Number(u.fight_losses || 0) > 0)
+      .filter(u =>
+        Number(u.fight_score || 0) > 0 ||
+        Number(u.fight_wins || 0) > 0 ||
+        Number(u.fight_losses || 0) > 0 ||
+        (bucketId && (u.fight_bucket_id || 'default_bucket') === bucketId) ||
+        (callerId && Number(u.user_id) === callerId)
+      )
       .sort((a, b) => (Number(b.fight_score || 0) - Number(a.fight_score || 0)) || (Number(b.fight_wins || 0) - Number(a.fight_wins || 0)))
+      .slice(0, 50)
       .map(u => ({ ...u }));
     return { rows: list, rowCount: list.length };
   }
@@ -902,15 +928,42 @@ function executeMemoryQuery(text, params = []) {
   }
 
   if (norm.includes('FROM FIGHTS') && norm.includes('ORDER BY CREATED_AT DESC')) {
-    const targetUserId = Number(params[0]);
-    const matched = memoryDb.fights
-      .filter(f => {
-        const leftIds = (f.left_team || []).map(p => Number(p.userId));
-        const rightIds = (f.right_team || []).map(p => Number(p.userId));
-        return leftIds.includes(targetUserId) || rightIds.includes(targetUserId);
-      })
-      .sort((a, b) => Number(b.created_at) - Number(a.created_at));
-    return { rows: matched.map(m => ({ ...m })), rowCount: matched.length };
+    if (norm.includes('WHERE EXISTS')) {
+      const targetUserId = Number(params[0]);
+      const matched = memoryDb.fights
+        .filter(f => {
+          const leftIds = (f.left_team || []).map(p => Number(p.userId));
+          const rightIds = (f.right_team || []).map(p => Number(p.userId));
+          return leftIds.includes(targetUserId) || rightIds.includes(targetUserId);
+        })
+        .sort((a, b) => Number(b.created_at) - Number(a.created_at));
+      return { rows: matched.map(m => ({ ...m })), rowCount: matched.length };
+    }
+    const limit = Number(params[0] || 100);
+    const list = [...memoryDb.fights]
+      .sort((a, b) => Number(b.created_at) - Number(a.created_at))
+      .slice(0, limit);
+    return { rows: list.map(m => ({ ...m })), rowCount: list.length };
+  }
+
+  // 8b. Active Fights Table
+  if (norm.startsWith('INSERT INTO ACTIVE_FIGHTS')) {
+    const sessionId = String(params[0]);
+    const state = typeof params[1] === 'string' ? JSON.parse(params[1]) : params[1];
+    const updatedAt = Number(params[2] || Date.now());
+    const row = { session_id: sessionId, state, updated_at: updatedAt };
+    memoryDb.active_fights.set(sessionId, row);
+    return { rows: [{ ...row }], rowCount: 1 };
+  }
+
+  if (norm.startsWith('SELECT') && norm.includes('FROM ACTIVE_FIGHTS') && norm.includes('WHERE SESSION_ID = $1')) {
+    const found = memoryDb.active_fights.get(String(params[0]));
+    return { rows: found ? [{ ...found, state: JSON.parse(JSON.stringify(found.state)) }] : [], rowCount: found ? 1 : 0 };
+  }
+
+  if (norm.startsWith('DELETE FROM ACTIVE_FIGHTS')) {
+    const existed = memoryDb.active_fights.delete(String(params[0]));
+    return { rows: [], rowCount: existed ? 1 : 0 };
   }
 
   // 9. Fight Reputations Table

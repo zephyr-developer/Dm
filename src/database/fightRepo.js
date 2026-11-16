@@ -1,4 +1,4 @@
-import { query } from './db.js';
+import { query, isPostgresConfigured } from './db.js';
 
 export const FIGHT_RANKS = [
   { name: 'Bronze', emoji: '🥉', title: 'Bronze Brawler', minScore: 0, idx: 0 },
@@ -84,6 +84,19 @@ export function parseActionCounts(raw) {
   return {};
 }
 
+export function safeJsonArray(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export function getFavoriteAndLeastActions(rawCounts) {
   const counts = parseActionCounts(rawCounts);
   const entries = Object.entries(counts)
@@ -103,7 +116,7 @@ export function getFavoriteAndLeastActions(rawCounts) {
 
   return {
     favAction: `${fav.meta.label} (${fav.count})`,
-    leastFavAction: entries.length === 1 ? `${least.meta.label} (${least.count})` : `${least.meta.label} (${least.count})`
+    leastFavAction: `${least.meta.label} (${least.count})`
   };
 }
 
@@ -140,6 +153,73 @@ function makePairKey(userAId, userBId) {
   return a <= b ? `${a}:${b}` : `${b}:${a}`;
 }
 
+let schemaReadyPromise = null;
+
+export async function ensureFightSchema(force = false) {
+  if (!isPostgresConfigured) return true;
+  if (schemaReadyPromise && !force) {
+    return schemaReadyPromise;
+  }
+
+  schemaReadyPromise = (async () => {
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_rep INTEGER DEFAULT 0;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_streak INTEGER DEFAULT 0;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_wins INTEGER DEFAULT 0;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_losses INTEGER DEFAULT 0;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_rank VARCHAR(20) DEFAULT 'Bronze';`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_score INTEGER DEFAULT 0;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_bucket_id VARCHAR(32) DEFAULT 'default_bucket';`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_unlocked_ranks TEXT DEFAULT 'Bronze';`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_action_counts JSONB DEFAULT '{}'::jsonb;`);
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS active_fights (
+        session_id VARCHAR(64) PRIMARY KEY,
+        state JSONB NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+    `);
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS fights (
+        fight_id SERIAL PRIMARY KEY,
+        type VARCHAR(20) NOT NULL,
+        mode VARCHAR(30) NOT NULL,
+        wager_coins BIGINT DEFAULT 0,
+        left_team JSONB NOT NULL,
+        right_team JSONB NOT NULL,
+        winner_side VARCHAR(10),
+        rounds_log JSONB NOT NULL,
+        created_at BIGINT NOT NULL
+      );
+    `);
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS fight_reputations (
+        giver_id BIGINT NOT NULL,
+        receiver_id BIGINT NOT NULL,
+        PRIMARY KEY (giver_id, receiver_id)
+      );
+    `);
+
+    await query(`
+      CREATE TABLE IF NOT EXISTS fight_daily_pairs (
+        day_key VARCHAR(16) NOT NULL,
+        pair_key VARCHAR(64) NOT NULL,
+        fight_count INTEGER DEFAULT 0,
+        PRIMARY KEY (day_key, pair_key)
+      );
+    `);
+    return true;
+  })().catch((err) => {
+    schemaReadyPromise = null;
+    console.error('[FightRepo] ensureFightSchema error:', err.message);
+    throw err;
+  });
+
+  return schemaReadyPromise;
+}
+
 export const fightRepo = {
   FIGHT_RANKS,
   FIGHT_ACTIONS,
@@ -151,8 +231,51 @@ export const fightRepo = {
   getFavoriteAndLeastActions,
   getCurrentWeekBucketId,
   getDiminishingFactorForCount,
+  ensureFightSchema,
+
+  async saveActiveFight(sessionId, state) {
+    await ensureFightSchema();
+    const sid = String(sessionId);
+    const now = Date.now();
+    await query(
+      `INSERT INTO active_fights (session_id, state, updated_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (session_id) DO UPDATE SET
+         state = EXCLUDED.state,
+         updated_at = EXCLUDED.updated_at;`,
+      [sid, JSON.stringify(state), now]
+    );
+    return state;
+  },
+
+  async getActiveFight(sessionId) {
+    await ensureFightSchema();
+    const res = await query(
+      `SELECT state FROM active_fights WHERE session_id = $1;`,
+      [String(sessionId)]
+    );
+    const row = res.rows[0];
+    if (!row || !row.state) return null;
+    if (typeof row.state === 'string') {
+      try {
+        return JSON.parse(row.state);
+      } catch {
+        return null;
+      }
+    }
+    return row.state;
+  },
+
+  async deleteActiveFight(sessionId) {
+    await ensureFightSchema();
+    await query(
+      `DELETE FROM active_fights WHERE session_id = $1;`,
+      [String(sessionId)]
+    );
+  },
 
   async getPairFightCountToday(userAId, userBId) {
+    await ensureFightSchema();
     const dayKey = getTodayDateKey();
     const pairKey = makePairKey(userAId, userBId);
     const res = await query(
@@ -163,6 +286,7 @@ export const fightRepo = {
   },
 
   async incrementPairFightCount(userAId, userBId) {
+    await ensureFightSchema();
     const dayKey = getTodayDateKey();
     const pairKey = makePairKey(userAId, userBId);
     const res = await query(
@@ -177,6 +301,7 @@ export const fightRepo = {
   },
 
   async checkAndRunWeeklyRollover() {
+    await ensureFightSchema();
     const currentWeek = getCurrentWeekBucketId();
     const settingRes = await query(`SELECT value FROM settings WHERE key = $1;`, ['fight_active_week']);
     const prevWeek = settingRes.rows[0]?.value;
@@ -194,7 +319,6 @@ export const fightRepo = {
       return { rolledOver: false, week: currentWeek };
     }
 
-    // Weekly rollover: promote Top 20%, demote Bottom 20% across bucket participants, keep unlocked titles permanent
     const usersRes = await query(
       `SELECT * FROM users WHERE fight_bucket_id = $1 OR (fight_wins + fight_losses) > 0 ORDER BY fight_score DESC, fight_wins DESC;`,
       [prevWeek]
@@ -258,6 +382,7 @@ export const fightRepo = {
     accuracyBonusByUser = {},
     actionCountsByUser = {}
   }) {
+    await ensureFightSchema();
     await this.checkAndRunWeeklyRollover().catch(() => {});
     const currentBucket = getCurrentWeekBucketId();
 
@@ -365,6 +490,7 @@ export const fightRepo = {
   },
 
   async recordCustomActionCounts(actionCountsByUser = {}) {
+    await ensureFightSchema();
     for (const [uidStr, roundAdded] of Object.entries(actionCountsByUser)) {
       const uid = Number(uidStr);
       const userRes = await query('SELECT fight_action_counts FROM users WHERE user_id = $1;', [uid]);
@@ -382,6 +508,7 @@ export const fightRepo = {
   },
 
   async saveFightRecord({ type, mode, wagerCoins = 0, leftTeam, rightTeam, winnerSide, roundsLog }) {
+    await ensureFightSchema();
     const res = await query(
       `INSERT INTO fights (type, mode, wager_coins, left_team, right_team, winner_side, rounds_log, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -397,43 +524,51 @@ export const fightRepo = {
         Date.now()
       ]
     );
-    return res.rows[0];
+    const row = res.rows[0];
+    return {
+      ...row,
+      left_team: safeJsonArray(row.left_team),
+      right_team: safeJsonArray(row.right_team),
+      rounds_log: safeJsonArray(row.rounds_log)
+    };
   },
 
   async getFightById(fightId) {
+    await ensureFightSchema();
     const res = await query(`SELECT * FROM fights WHERE fight_id = $1;`, [Number(fightId)]);
     const row = res.rows[0];
     if (!row) return null;
     return {
       ...row,
-      left_team: typeof row.left_team === 'string' ? JSON.parse(row.left_team) : row.left_team,
-      right_team: typeof row.right_team === 'string' ? JSON.parse(row.right_team) : row.right_team,
-      rounds_log: typeof row.rounds_log === 'string' ? JSON.parse(row.rounds_log) : row.rounds_log
+      left_team: safeJsonArray(row.left_team),
+      right_team: safeJsonArray(row.right_team),
+      rounds_log: safeJsonArray(row.rounds_log)
     };
   },
 
   async getUserFightHistory(userId) {
+    await ensureFightSchema();
     const uid = Number(userId);
+    // Fetch latest 100 fights cleanly and filter in JS so JSONB operators never fail across DB versions
     const res = await query(
-      `SELECT * FROM fights
-       WHERE EXISTS (
-         SELECT 1 FROM jsonb_array_elements(left_team) elem WHERE (elem->>'userId')::bigint = $1
-       )
-       OR EXISTS (
-         SELECT 1 FROM jsonb_array_elements(right_team) elem WHERE (elem->>'userId')::bigint = $1
-       )
-       ORDER BY created_at DESC;`,
-      [uid]
+      `SELECT * FROM fights ORDER BY created_at DESC LIMIT $1;`,
+      [100]
     );
-    return (res.rows || []).map(row => ({
-      ...row,
-      left_team: typeof row.left_team === 'string' ? JSON.parse(row.left_team) : row.left_team,
-      right_team: typeof row.right_team === 'string' ? JSON.parse(row.right_team) : row.right_team,
-      rounds_log: typeof row.rounds_log === 'string' ? JSON.parse(row.rounds_log) : row.rounds_log
-    }));
+    return (res.rows || [])
+      .map(row => ({
+        ...row,
+        left_team: safeJsonArray(row.left_team),
+        right_team: safeJsonArray(row.right_team),
+        rounds_log: safeJsonArray(row.rounds_log)
+      }))
+      .filter(f =>
+        f.left_team.some(p => Number(p?.userId) === uid) ||
+        f.right_team.some(p => Number(p?.userId) === uid)
+      );
   },
 
   async giveReputation(giverId, receiverId) {
+    await ensureFightSchema();
     const gId = Number(giverId);
     const rId = Number(receiverId);
     if (gId === rId) {
@@ -458,7 +593,7 @@ export const fightRepo = {
     }
 
     const updRes = await query(
-      `UPDATE users SET fight_rep = fight_rep + 1 WHERE user_id = $1 RETURNING fight_rep;`,
+      `UPDATE users SET fight_rep = COALESCE(fight_rep, 0) + 1 WHERE user_id = $1 RETURNING fight_rep;`,
       [rId]
     );
     return {
@@ -468,17 +603,24 @@ export const fightRepo = {
     };
   },
 
-  async getBucketStandings(bucketId = null) {
+  async getBucketStandings(bucketId = null, callerId = null) {
+    await ensureFightSchema();
     await this.checkAndRunWeeklyRollover().catch(() => {});
     const targetBucket = bucketId || getCurrentWeekBucketId();
+
     const res = await query(
       `SELECT user_id, username, first_name, fight_rank, fight_score, fight_rep, fight_wins, fight_losses, fight_streak, fight_bucket_id
        FROM users
-       WHERE fight_bucket_id = $1
-          OR (fight_wins + fight_losses) > 0
-       ORDER BY fight_score DESC, fight_wins DESC;`,
-      [targetBucket]
+       WHERE fight_score > 0
+          OR fight_wins > 0
+          OR fight_losses > 0
+          OR fight_bucket_id = $1
+          OR user_id = $2
+       ORDER BY fight_score DESC, fight_wins DESC
+       LIMIT 50;`,
+      [targetBucket, Number(callerId || 0)]
     );
+
     const rows = res.rows || [];
     const total = rows.length;
     const promoteCutoff = total > 0 ? Math.max(1, Math.floor(total * 0.2)) : 0;
@@ -494,6 +636,7 @@ export const fightRepo = {
   },
 
   async getFightLeaderboard(chatId = null, limit = 10) {
+    await ensureFightSchema();
     if (chatId) {
       const sql = `
         SELECT u.user_id, u.username, u.first_name, u.premium_until,

@@ -4,6 +4,9 @@ import fightRepo from '../../database/fightRepo.js';
 import { formatCoins, parseBet, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
 import { isGenuineUserReply, resolveTargetUser } from '../../utils/targetResolver.js';
 
+export const MAX_ROUNDS = 20;
+const FORCE_TURN_WAIT_MS = 30_000;
+
 export const PRESET_MODES = {
   normal: {
     key: 'normal',
@@ -56,9 +59,8 @@ export const PRESET_MODES = {
     hp: 100,
     moves: ['punch', 'kick', 'flee'],
     hideHealth: true,
-    hideLogValues: false,
-    chaos: false,
-    hideValuesExplicit: true
+    hideLogValues: true,
+    chaos: false
   },
   chaos: {
     key: 'chaos',
@@ -70,9 +72,6 @@ export const PRESET_MODES = {
     chaos: true
   }
 };
-
-// Keep surprise log values hidden too
-PRESET_MODES.surprise.hideLogValues = true;
 
 const MOVE_BUTTON_META = {
   punch: { label: '👊 Punch', key: 'punch' },
@@ -87,17 +86,104 @@ const MOVE_BUTTON_META = {
 
 const CUSTOM_HEALTH_STEPS = [50, 100, 200, 500];
 const CUSTOM_TOGGLE_MOVES = ['punch', 'kick', 'defend', 'flee', 'kiss', 'spin', 'flick'];
-const TURN_TIMEOUT_MS = 30_000;
-const CHALLENGE_TTL_MS = 120_000;
 
-let sessionSeq = 1;
-// Active quick challenges, custom lobbies, and ongoing fights: sid -> session
-const activeSessions = new Map();
-// Rematch agreements keyed by persisted fightId: fightId -> { votes: Set<userId>, launched: boolean }
-const rematchVotes = new Map();
-
+// Collision-free compact session ID (11-12 chars -> keeps all callback_data well under Telegram's 64-byte cap)
 function nextSessionId() {
-  return `f${sessionSeq++}`;
+  const ts = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${ts}${rand}`;
+}
+
+// Helpers for pendingMoves (stored as plain JSON object in active_fights, also supports Map for tests)
+function getPendingMove(session, userId) {
+  const pm = session?.pendingMoves;
+  if (!pm) return undefined;
+  if (pm instanceof Map) return pm.get(userId);
+  return pm[String(userId)] || pm[userId];
+}
+
+function hasPendingMove(session, userId) {
+  return Boolean(getPendingMove(session, userId));
+}
+
+function setPendingMove(session, userId, value) {
+  if (!session.pendingMoves) session.pendingMoves = {};
+  if (session.pendingMoves instanceof Map) {
+    session.pendingMoves.set(userId, value);
+  } else {
+    session.pendingMoves[String(userId)] = value;
+  }
+}
+
+function clearPendingMoves(session) {
+  if (session.pendingMoves instanceof Map) {
+    session.pendingMoves.clear();
+  } else {
+    session.pendingMoves = {};
+  }
+}
+
+function countPendingMoves(session) {
+  const pm = session?.pendingMoves;
+  if (!pm) return 0;
+  if (pm instanceof Map) return pm.size;
+  return Object.keys(pm).length;
+}
+
+// Helpers for readyUsers & moves (stored as JSON arrays in active_fights)
+function getReadySet(lobby) {
+  if (lobby.readyUsers instanceof Set) return lobby.readyUsers;
+  return new Set((lobby.readyUsers || []).map(Number));
+}
+
+function setReadyList(lobby, setObj) {
+  lobby.readyUsers = [...setObj].map(Number);
+}
+
+function getLobbyMovesList(lobby) {
+  if (lobby.moves instanceof Set) return [...lobby.moves];
+  return Array.isArray(lobby.moves) ? [...lobby.moves] : ['punch', 'kick', 'defend', 'flee'];
+}
+
+// Crash-proof Telegram edit & answer helpers
+async function safeEditMessage(ctx, text, opts = {}) {
+  try {
+    if (typeof ctx.editMessageText === 'function') {
+      return await ctx.editMessageText(text, opts);
+    }
+    const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    if (ctx.api && chatId && messageId) {
+      return await ctx.api.editMessageText(chatId, messageId, text, opts);
+    }
+  } catch (err) {
+    const desc = String(err?.description || err?.message || err || '').toLowerCase();
+    if (
+      desc.includes('message is not modified') ||
+      desc.includes('message to edit not found') ||
+      desc.includes("message can't be edited") ||
+      desc.includes('query is too old') ||
+      desc.includes('chat not found')
+    ) {
+      return null;
+    }
+    console.error('[Fight] safeEditMessage error:', err?.description || err?.message || err);
+  }
+  return null;
+}
+
+async function safeAnswerCallback(ctx, opts = {}) {
+  try {
+    if (typeof ctx.answerCallbackQuery === 'function') {
+      return await ctx.answerCallbackQuery(opts);
+    }
+  } catch (err) {
+    const desc = String(err?.description || err?.message || err || '').toLowerCase();
+    if (!desc.includes('query is too old')) {
+      console.error('[Fight] safeAnswerCallback error:', err?.description || err?.message || err);
+    }
+  }
+  return null;
 }
 
 function buildHpBar(hp, maxHp, side = 'left', hideHealth = false) {
@@ -142,7 +228,7 @@ function createFighterState(user, maxHp) {
 
 function renderFighterBlock(f, side, session, isFinished = false) {
   const rankMeta = fightRepo.getRankMeta(f.rank || 'Bronze');
-  const hideHp = session.hideHealth && !isFinished;
+  const hideHp = Boolean(session.hideHealth) && !isFinished;
   const hpBar = buildHpBar(f.hp, f.maxHp, side, hideHp);
   const hpNumeric = hideHp ? '' : ` (${f.hp}/${f.maxHp})`;
 
@@ -152,7 +238,7 @@ function renderFighterBlock(f, side, session, isFinished = false) {
       statusTag = ' <i>(🏃 fled)</i>';
     } else if (f.hp <= 0) {
       statusTag = ' <i>(💀 KO)</i>';
-    } else if (session.pendingMoves?.has(f.userId)) {
+    } else if (hasPendingMove(session, f.userId)) {
       statusTag = ' <i>(✅ ready)</i>';
     } else {
       statusTag = ' <i>(waiting)</i>';
@@ -172,28 +258,35 @@ function renderFighterBlock(f, side, session, isFinished = false) {
 }
 
 function renderBattleMessage(session, { isFinished = false, endSummary = '' } = {}) {
+  const maxR = Number(session.maxRounds || MAX_ROUNDS);
   const header = isFinished
-    ? `⚔️ <b>${sanitizeHtml(session.modeLabel)} — Fight Ended (Round ${session.round})</b>`
-    : `⚔️ <b>${sanitizeHtml(session.modeLabel)} — Round ${session.round}</b>`;
+    ? `⚔️ <b>${sanitizeHtml(session.modeLabel)} — Fight Ended (Round ${session.round} / ${maxR})</b>`
+    : `⚔️ <b>${sanitizeHtml(session.modeLabel)} — Round ${session.round} / ${maxR}</b>`;
 
-  const leftText = session.leftTeam.map(f => renderFighterBlock(f, 'left', session, isFinished)).join('\n\n');
-  const rightText = session.rightTeam.map(f => renderFighterBlock(f, 'right', session, isFinished)).join('\n\n');
+  const hiddenHint = (!isFinished && session.hideHealth)
+    ? `\n🙈 <i>Health is hidden! Fight ends automatically at KO or Round ${maxR} max.</i>`
+    : '';
+
+  const leftText = (session.leftTeam || []).map(f => renderFighterBlock(f, 'left', session, isFinished)).join('\n\n');
+  const rightText = (session.rightTeam || []).map(f => renderFighterBlock(f, 'right', session, isFinished)).join('\n\n');
 
   let logBlock = '';
   if (session.lastRoundLines && session.lastRoundLines.length > 0) {
     logBlock = `\n\n📜 <b>Last Round:</b>\n${session.lastRoundLines.join('\n')}`;
   }
 
-  const wagerLine = session.wagerCoins > 0
-    ? `\n💰 <b>Pot:</b> ${formatCoins(session.wagerCoins * (session.leftTeam.length + session.rightTeam.length))}`
+  const wagerCoins = Number(session.wagerCoins || 0);
+  const totalPlayers = (session.leftTeam?.length || 0) + (session.rightTeam?.length || 0);
+  const wagerLine = wagerCoins > 0
+    ? `\n💰 <b>Pot:</b> ${formatCoins(wagerCoins * totalPlayers)}`
     : '';
 
   const timerLine = !isFinished
-    ? `\n⏳ <i>All active fighters choose simultaneously (30s timer)</i>`
+    ? `\n⏳ <i>All active fighters choose simultaneously (Force Turn unlocks after 30s)</i>`
     : '';
 
   return (
-    `${header}${wagerLine}\n` +
+    `${header}${wagerLine}${hiddenHint}\n` +
     `━━━━━━━━━━━━━━━━━━━━━\n` +
     `${leftText}\n\n` +
     `⚡ <b>VS</b> ⚡\n\n` +
@@ -217,8 +310,10 @@ function buildActiveMoveKeyboard(session) {
     }
   });
 
-  if (session.wagerCoins > 0) {
-    kb.row().text('⚠️', 'gamble:warning');
+  kb.row().text('⏰ Force Turn', `fight:ft:${session.sid}:${session.round}`);
+
+  if (Number(session.wagerCoins || 0) > 0) {
+    kb.text('⚠️', 'gamble:warning');
   }
   return kb;
 }
@@ -243,41 +338,7 @@ export function buildPostFightKeyboard(fightRecord, rematchCount = 0) {
 }
 
 function getAllAliveFighters(session) {
-  return [...session.leftTeam, ...session.rightTeam].filter(f => f.hp > 0 && !f.fled);
-}
-
-function clearSessionTimer(session) {
-  if (session.turnTimer) {
-    clearTimeout(session.turnTimer);
-    session.turnTimer = null;
-  }
-}
-
-function scheduleTurnTimer(session, botApi, chatId, messageId) {
-  clearSessionTimer(session);
-  const expectedRound = session.round;
-  session.turnTimer = setTimeout(async () => {
-    const active = activeSessions.get(session.sid);
-    if (!active || active.phase !== 'fighting' || active.round !== expectedRound) return;
-
-    const alive = getAllAliveFighters(active);
-    const nonFlee = (active.allowedMoves || ['punch']).filter(m => m !== 'flee');
-    const fallback = nonFlee.length > 0 ? nonFlee : ['punch'];
-
-    for (const fighter of alive) {
-      if (!active.pendingMoves.has(fighter.userId)) {
-        let choices = [...fallback];
-        if (fighter.defendCd > 0) choices = choices.filter(m => m !== 'defend');
-        if (fighter.kissCd > 0) choices = choices.filter(m => m !== 'kiss');
-        if (choices.length === 0) choices = ['punch'];
-        const autoMove = choices[Math.floor(Math.random() * choices.length)];
-        active.pendingMoves.set(fighter.userId, { move: autoMove, auto: true });
-      }
-    }
-
-    await resolveRoundAndRender(active, { api: botApi, chatId, messageId });
-  }, TURN_TIMEOUT_MS);
-  session.turnTimer.unref?.();
+  return [...(session.leftTeam || []), ...(session.rightTeam || [])].filter(f => f.hp > 0 && !f.fled);
 }
 
 function pickRandomAlive(team) {
@@ -286,17 +347,46 @@ function pickRandomAlive(team) {
   return alive[Math.floor(Math.random() * alive.length)];
 }
 
-export function resolveFightRoundEngine(session) {
+function calculateTeamHpPct(team) {
+  let hpSum = 0;
+  let maxSum = 0;
+  for (const f of team || []) {
+    if (!f.fled) {
+      hpSum += Math.max(0, Number(f.hp || 0));
+    }
+    maxSum += Math.max(1, Number(f.maxHp || 100));
+  }
+  return maxSum > 0 ? (hpSum / maxSum) * 100 : 0;
+}
+
+export function resolveFightRoundEngine(session, { forceAutoUnpicked = false } = {}) {
   const leftAliveBefore = session.leftTeam.filter(f => f.hp > 0 && !f.fled);
   const rightAliveBefore = session.rightTeam.filter(f => f.hp > 0 && !f.fled);
   const activeFighters = [...leftAliveBefore, ...rightAliveBefore];
+  const nonFlee = (session.allowedMoves || ['punch']).filter(m => m !== 'flee');
+  const fallbackPool = nonFlee.length > 0 ? nonFlee : ['punch'];
 
   const resolvedMoves = new Map();
   const defendingIds = new Set();
 
   // 1. Expand Chaos & mark defending/fleeing fighters first
   for (const f of activeFighters) {
-    const picked = session.pendingMoves.get(f.userId) || { move: 'punch', auto: true };
+    let picked = getPendingMove(session, f.userId);
+    if (!picked) {
+      if (forceAutoUnpicked) {
+        let choices = [...fallbackPool];
+        if (f.defendCd > 0) choices = choices.filter(m => m !== 'defend');
+        if (f.kissCd > 0) choices = choices.filter(m => m !== 'kiss');
+        if (choices.length === 0) choices = ['punch'];
+        picked = { move: choices[Math.floor(Math.random() * choices.length)], auto: true };
+      } else {
+        // Unpicked fighter (e.g., teammate when opponent fled early): tick cooldowns safely, skip action
+        if (f.defendCd > 0) f.defendCd -= 1;
+        if (f.kissCd > 0) f.kissCd -= 1;
+        continue;
+      }
+    }
+
     let actualMove = picked.move;
     let wasChaos = false;
 
@@ -307,12 +397,12 @@ export function resolveFightRoundEngine(session) {
       actualMove = pool[Math.floor(Math.random() * pool.length)];
     }
 
-    // Track action count
+    f.actionCounts = f.actionCounts || {};
     f.actionCounts[actualMove] = Number(f.actionCounts[actualMove] || 0) + 1;
 
     if (actualMove === 'defend') {
       defendingIds.add(f.userId);
-      f.defendCd = 3; // Cannot use Defend for next 3 turns afterward
+      f.defendCd = 3; // 3-turn cooldown afterward
     } else if (f.defendCd > 0) {
       f.defendCd -= 1;
     }
@@ -336,9 +426,11 @@ export function resolveFightRoundEngine(session) {
 
   const sideOf = (uid) => (session.leftTeam.some(f => f.userId === uid) ? 'left' : 'right');
 
-  // 2. Process all simultaneous moves
+  // 2. Process all submitted simultaneous moves
   for (const f of activeFighters) {
     const info = resolvedMoves.get(f.userId);
+    if (!info) continue;
+
     const move = info.actualMove;
     const fName = formatFighterHandle(f);
     const mySide = sideOf(f.userId);
@@ -537,7 +629,6 @@ export function resolveFightRoundEngine(session) {
     }
   }
 
-  // Clamp dead/fled cleanly and record snapshot
   const snapshotSide = (team) => team.map(f => ({
     userId: f.userId,
     username: f.username,
@@ -551,6 +642,7 @@ export function resolveFightRoundEngine(session) {
     streak: f.streak
   }));
 
+  session.roundsLog = session.roundsLog || [];
   session.roundsLog.push({
     round: session.round,
     actions: actionsLog,
@@ -559,27 +651,41 @@ export function resolveFightRoundEngine(session) {
   });
 
   session.lastRoundLines = roundLines;
-  session.pendingMoves.clear();
+  clearPendingMoves(session);
 
   const leftAliveAfter = session.leftTeam.filter(f => f.hp > 0 && !f.fled).length;
   const rightAliveAfter = session.rightTeam.filter(f => f.hp > 0 && !f.fled).length;
 
   let winnerSide = null;
+  let endedByTimeLimit = false;
+  let leftPct = null;
+  let rightPct = null;
+
   if (leftAliveAfter === 0 && rightAliveAfter === 0) {
     winnerSide = 'draw';
   } else if (rightAliveAfter === 0) {
     winnerSide = 'left';
   } else if (leftAliveAfter === 0) {
     winnerSide = 'right';
+  } else if (Number(session.round) >= Number(session.maxRounds || MAX_ROUNDS)) {
+    // Strict 20-Round Max Cap -> Reveal HP & Decide by Remaining HP %
+    endedByTimeLimit = true;
+    session.hideHealth = false;
+    leftPct = calculateTeamHpPct(session.leftTeam);
+    rightPct = calculateTeamHpPct(session.rightTeam);
+    if (Math.abs(leftPct - rightPct) < 0.001) {
+      winnerSide = 'draw';
+    } else {
+      winnerSide = leftPct > rightPct ? 'left' : 'right';
+    }
   }
 
-  return { winnerSide, roundLines };
+  return { winnerSide, roundLines, endedByTimeLimit, leftPct, rightPct };
 }
 
-async function finalizeFight(session, winnerSide) {
-  clearSessionTimer(session);
+async function finalizeFight(session, winnerSide, { endedByTimeLimit = false, leftPct = null, rightPct = null } = {}) {
   session.phase = 'finished';
-  activeSessions.delete(session.sid);
+  session.hideHealth = false;
 
   const allFighters = [...session.leftTeam, ...session.rightTeam];
   const leftIds = session.leftTeam.map(f => f.userId);
@@ -587,17 +693,18 @@ async function finalizeFight(session, winnerSide) {
 
   // Settle wagers
   let wagerSummary = '';
-  if (session.wagerCoins > 0) {
-    const totalPot = session.wagerCoins * allFighters.length;
+  const wagerCoins = Number(session.wagerCoins || 0);
+  if (wagerCoins > 0) {
+    const totalPot = wagerCoins * allFighters.length;
     if (winnerSide === 'draw') {
       for (const f of allFighters) {
         await userRepo.updateCoins(f.userId, {
-          walletDelta: session.wagerCoins,
+          walletDelta: wagerCoins,
           sourceCommand: '/fight',
           details: 'Fight Draw Wager Refund'
         });
       }
-      wagerSummary = `\n🤝 <b>Draw Refund:</b> Everyone received ${formatCoins(session.wagerCoins)} back.`;
+      wagerSummary = `\n🤝 <b>Draw Refund:</b> Everyone received ${formatCoins(wagerCoins)} back.`;
     } else {
       const winners = winnerSide === 'left' ? session.leftTeam : session.rightTeam;
       const share = Math.floor(totalPot / winners.length);
@@ -620,10 +727,10 @@ async function finalizeFight(session, winnerSide) {
   const fledUserIds = new Set();
 
   for (const f of allFighters) {
-    actionCountsByUser[f.userId] = f.actionCounts;
+    actionCountsByUser[f.userId] = f.actionCounts || {};
     hpPercentByUser[f.userId] = f.maxHp > 0 ? Math.round((f.hp / f.maxHp) * 100) : 0;
-    const totalSwings = f.hits + f.misses;
-    accuracyBonusByUser[f.userId] = (totalSwings > 0 && f.misses === 0) ? 5 : 0;
+    const totalSwings = Number(f.hits || 0) + Number(f.misses || 0);
+    accuracyBonusByUser[f.userId] = (totalSwings > 0 && Number(f.misses || 0) === 0) ? 5 : 0;
     if (f.fled) fledUserIds.add(f.userId);
   }
 
@@ -656,7 +763,6 @@ async function finalizeFight(session, winnerSide) {
         .join('\n');
     }
 
-    // Refresh fighter rank/streak snapshots for display
     for (const f of allFighters) {
       const fresh = await userRepo.getUser(f.userId);
       if (fresh) {
@@ -672,7 +778,7 @@ async function finalizeFight(session, winnerSide) {
     rankSummary = `\n🎮 <i>Unranked Custom Fight — Rankings, streaks &amp; reputation unaffected.</i>`;
   }
 
-  // Persist stateless fight record to PostgreSQL
+  // Persist stateless fight record BEFORE deleting active_fights row
   const serializeTeam = (team, isLeft = false) => team.map((f, idx) => ({
     userId: f.userId,
     username: f.username,
@@ -693,8 +799,8 @@ async function finalizeFight(session, winnerSide) {
       ? {
           customConfig: {
             hp: session.hp,
-            hideHealth: session.hideHealth,
-            hideLogValues: session.hideLogValues,
+            hideHealth: Boolean(session.wasHiddenHealth),
+            hideLogValues: Boolean(session.hideLogValues),
             allowedMoves: session.allowedMoves || ['punch', 'kick', 'defend', 'flee']
           }
         }
@@ -704,15 +810,27 @@ async function finalizeFight(session, winnerSide) {
   const savedFight = await fightRepo.saveFightRecord({
     type: session.type,
     mode: session.mode,
-    wagerCoins: session.wagerCoins,
+    wagerCoins,
     leftTeam: serializeTeam(session.leftTeam, true),
     rightTeam: serializeTeam(session.rightTeam, false),
     winnerSide,
     roundsLog: session.roundsLog
   });
 
+  await fightRepo.deleteActiveFight(session.sid);
+
   let winBanner = '';
-  if (winnerSide === 'draw') {
+  if (endedByTimeLimit) {
+    const lStr = Number(leftPct || 0).toFixed(1);
+    const rStr = Number(rightPct || 0).toFixed(1);
+    const timeHeader = `⏱️ <b>20-ROUND TIME LIMIT REACHED!</b>\n⚖️ <b>Judge's Decision:</b> 💙 ${lStr}% HP vs ❤️ ${rStr}% HP\n`;
+    if (winnerSide === 'draw') {
+      winBanner = `${timeHeader}🤝 <b>IT'S A DRAW!</b> Exact tie on remaining HP%!`;
+    } else {
+      const winTeam = winnerSide === 'left' ? session.leftTeam : session.rightTeam;
+      winBanner = `${timeHeader}🏆 <b>VICTORY BY DECISION:</b> ${winTeam.map(formatFighterHandle).join(', ')}!`;
+    }
+  } else if (winnerSide === 'draw') {
     winBanner = `🤝 <b>IT'S A DRAW!</b> Both sides fell at the same time!`;
   } else {
     const winTeam = winnerSide === 'left' ? session.leftTeam : session.rightTeam;
@@ -729,69 +847,55 @@ async function finalizeFight(session, winnerSide) {
   return { finalText, finalKb, savedFight };
 }
 
-async function resolveRoundAndRender(session, transport) {
-  const { winnerSide } = resolveFightRoundEngine(session);
+async function resolveRoundAndRender(session, ctx, { forceAutoUnpicked = false } = {}) {
+  const { winnerSide, endedByTimeLimit, leftPct, rightPct } = resolveFightRoundEngine(session, { forceAutoUnpicked });
 
   if (winnerSide) {
-    const { finalText, finalKb } = await finalizeFight(session, winnerSide);
-    if (transport.ctx) {
-      await transport.ctx.editMessageText(finalText, {
-        parse_mode: 'HTML',
-        reply_markup: finalKb
-      }).catch(() => {});
-    } else if (transport.api && transport.chatId && transport.messageId) {
-      await transport.api.editMessageText(transport.chatId, transport.messageId, finalText, {
-        parse_mode: 'HTML',
-        reply_markup: finalKb
-      }).catch(() => {});
-    }
-    return;
+    const { finalText, finalKb } = await finalizeFight(session, winnerSide, { endedByTimeLimit, leftPct, rightPct });
+    await safeEditMessage(ctx, finalText, {
+      parse_mode: 'HTML',
+      reply_markup: finalKb
+    });
+    return { finished: true };
   }
 
   session.round += 1;
+  session.roundStartedAt = Date.now();
+  await fightRepo.saveActiveFight(session.sid, session);
+
   const nextText = renderBattleMessage(session, { isFinished: false });
   const nextKb = buildActiveMoveKeyboard(session);
 
-  if (transport.ctx) {
-    await transport.ctx.editMessageText(nextText, {
-      parse_mode: 'HTML',
-      reply_markup: nextKb
-    }).catch(() => {});
-    scheduleTurnTimer(
-      session,
-      transport.ctx.api,
-      transport.ctx.chat?.id || transport.ctx.callbackQuery?.message?.chat?.id,
-      transport.ctx.callbackQuery?.message?.message_id
-    );
-  } else if (transport.api && transport.chatId && transport.messageId) {
-    await transport.api.editMessageText(transport.chatId, transport.messageId, nextText, {
-      parse_mode: 'HTML',
-      reply_markup: nextKb
-    }).catch(() => {});
-    scheduleTurnTimer(session, transport.api, transport.chatId, transport.messageId);
-  }
+  await safeEditMessage(ctx, nextText, {
+    parse_mode: 'HTML',
+    reply_markup: nextKb
+  });
+  return { finished: false };
 }
 
 // ==========================================
 // CUSTOM LOBBY RENDERING
 // ==========================================
 function renderCustomLobbyText(lobby) {
+  const readySet = getReadySet(lobby);
+  const movesList = getLobbyMovesList(lobby);
+
   const leftList = lobby.leftTeam.length > 0
-    ? lobby.leftTeam.map(u => `• ${formatFighterHandle(u)}${lobby.readyUsers.has(u.userId) ? ' ✅' : ''}`).join('\n')
+    ? lobby.leftTeam.map(u => `• ${formatFighterHandle(u)}${readySet.has(Number(u.userId)) ? ' ✅' : ''}`).join('\n')
     : '<i>Empty — click Join Left Side</i>';
   const rightList = lobby.rightTeam.length > 0
-    ? lobby.rightTeam.map(u => `• ${formatFighterHandle(u)}${lobby.readyUsers.has(u.userId) ? ' ✅' : ''}`).join('\n')
+    ? lobby.rightTeam.map(u => `• ${formatFighterHandle(u)}${readySet.has(Number(u.userId)) ? ' ✅' : ''}`).join('\n')
     : '<i>Empty — click Join Right Side</i>';
 
-  const activeMovesStr = [...lobby.moves]
+  const activeMovesStr = movesList
     .map(m => MOVE_BUTTON_META[m]?.label || m)
     .join(', ');
 
-  const wagerStr = lobby.wagerCoins > 0 ? formatCoins(lobby.wagerCoins) : 'None (Friendly)';
+  const wagerStr = Number(lobby.wagerCoins || 0) > 0 ? formatCoins(lobby.wagerCoins) : 'None (Friendly)';
   const totalJoined = lobby.leftTeam.length + lobby.rightTeam.length;
 
   return (
-    `⚔️ <b>Custom Team Fight Lobby (Unranked)</b>\n` +
+    `⚔️ <b>Custom Team Fight Lobby (Unranked • Max ${MAX_ROUNDS} Rounds)</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━\n` +
     `💙 <b>Left Team (${lobby.leftTeam.length}):</b>\n${leftList}\n\n` +
     `❤️ <b>Right Team (${lobby.rightTeam.length}):</b>\n${rightList}\n` +
@@ -805,9 +909,11 @@ function renderCustomLobbyText(lobby) {
 }
 
 function buildCustomLobbyKeyboard(lobby) {
+  const readySet = getReadySet(lobby);
+  const movesSet = new Set(getLobbyMovesList(lobby));
   const totalJoined = lobby.leftTeam.length + lobby.rightTeam.length;
-  const readyCount = lobby.readyUsers.size;
-  const mvMark = (m) => `${lobby.moves.has(m) ? '✅' : '❌'} ${MOVE_BUTTON_META[m].label}`;
+  const readyCount = readySet.size;
+  const mvMark = (m) => `${movesSet.has(m) ? '✅' : '❌'} ${MOVE_BUTTON_META[m].label}`;
 
   const kb = new InlineKeyboard()
     .text('⬅️ Join Left Side', `fight:jl:${lobby.sid}`)
@@ -830,7 +936,7 @@ function buildCustomLobbyKeyboard(lobby) {
     .text('❌ Cancel Lobby', `fight:cl:${lobby.sid}`)
     .text(`⚔️ Start Fight (${readyCount}/${totalJoined})`, `fight:go:${lobby.sid}`);
 
-  if (lobby.wagerCoins > 0) {
+  if (Number(lobby.wagerCoins || 0) > 0) {
     kb.row().text('⚠️', 'gamble:warning');
   }
   return kb;
@@ -840,7 +946,7 @@ function buildCustomLobbyKeyboard(lobby) {
 // RANKING & HISTORY VIEWS
 // ==========================================
 async function renderRankingView(callerId, page = 0) {
-  const standings = await fightRepo.getBucketStandings();
+  const standings = await fightRepo.getBucketStandings(null, callerId);
   const caller = await userRepo.getUser(callerId);
   const callerRankMeta = fightRepo.getRankMeta(caller?.fight_rank || 'Bronze');
   const nextRankMeta = fightRepo.FIGHT_RANKS[callerRankMeta.idx + 1] || null;
@@ -861,9 +967,11 @@ async function renderRankingView(callerId, page = 0) {
       if (globalIdx < standings.promoteCutoff) zoneIcon = '🔼';
       else if (globalIdx >= standings.demoteStart) zoneIcon = '🔽';
 
-      const handle = row.username ? `@${sanitizeHtml(row.username)}` : sanitizeHtml(row.first_name || `User ${row.user_id}`);
+      const handle = row.username
+        ? `@${sanitizeHtml(row.username)}`
+        : sanitizeHtml(row.first_name || `User ${row.user_id}`);
       const isYou = Number(row.user_id) === Number(callerId) ? ' <b>(You)</b>' : '';
-      lines += `${zoneIcon} <b>#${globalIdx + 1}</b> ${rMeta.emoji} <b>${handle}</b>${isYou} — <b>${Number(row.fight_score || 0)} pts</b> (${row.fight_wins || 0}W/${row.fight_losses || 0}L, 🎖️ ${row.fight_rep || 0})\n`;
+      lines += `${zoneIcon} <b>#${globalIdx + 1}</b> ${rMeta.emoji} <b>${handle}</b>${isYou} — <b>${Number(row.fight_score || 0)} pts</b> (${Number(row.fight_wins || 0)}W/${Number(row.fight_losses || 0)}L, 🎖️ ${Number(row.fight_rep || 0)})\n`;
     });
   }
 
@@ -872,9 +980,9 @@ async function renderRankingView(callerId, page = 0) {
     : `👑 <b>Maximum Rank Achieved!</b>`;
 
   const text =
-    `🏆 <b>Fight 2.0 Weekly Bucket Rankings</b> (<code>${standings.bucketId}</code>)\n` +
+    `🏆 <b>Fight 2.0 Weekly Bucket Rankings</b> (<code>${sanitizeHtml(standings.bucketId)}</code>)\n` +
     `━━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>Your Rank:</b> ${callerRankMeta.emoji} <b>${callerRankMeta.name}</b> (Title: <i>"${callerRankMeta.title}"</i>)\n` +
+    `👤 <b>Your Rank:</b> ${callerRankMeta.emoji} <b>${callerRankMeta.name}</b> (Title: <i>"${sanitizeHtml(callerRankMeta.title)}"</i>)\n` +
     `📊 <b>Your Score:</b> <b>${Number(caller?.fight_score || 0)} pts</b> | 🎖️ Rep: <b>${Number(caller?.fight_rep || 0)}</b> | 🔥 Streak: <b>${Number(caller?.fight_streak || 0)}</b>\n` +
     `${nextRankHint}\n` +
     `━━━━━━━━━━━━━━━━━━━━━\n` +
@@ -895,30 +1003,37 @@ async function renderRankingView(callerId, page = 0) {
 
 async function renderHistoryView(targetUser, callerId, page = 0) {
   const fights = await fightRepo.getUserFightHistory(targetUser.user_id);
+  const handle = targetUser.username
+    ? `@${sanitizeHtml(targetUser.username)}`
+    : sanitizeHtml(targetUser.first_name || String(targetUser.user_id));
+
+  if (fights.length === 0) {
+    return {
+      text:
+        `📜 <b>${handle}</b> has no recorded fights yet! Start one with <code>/fight quick @user</code>.\n\n` +
+        `📊 <b>Record:</b> ${Number(targetUser.fight_wins || 0)}W / ${Number(targetUser.fight_losses || 0)}L | 🔥 Streak: <b>${Number(targetUser.fight_streak || 0)}</b> | 🎖️ Rep: <b>${Number(targetUser.fight_rep || 0)}</b>`,
+      keyboard: undefined
+    };
+  }
+
   const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(fights.length / pageSize));
   const safePage = Math.max(0, Math.min(totalPages - 1, Number(page || 0)));
   const slice = fights.slice(safePage * pageSize, (safePage + 1) * pageSize);
 
-  const handle = targetUser.username ? `@${sanitizeHtml(targetUser.username)}` : sanitizeHtml(targetUser.first_name || String(targetUser.user_id));
-
   let lines = '';
-  if (slice.length === 0) {
-    lines = `<i>No fights recorded yet! Challenge someone with <code>/fight quick @user</code>.</i>\n`;
-  } else {
-    for (const f of slice) {
-      const uid = Number(targetUser.user_id);
-      const onLeft = (f.left_team || []).some(p => Number(p.userId) === uid);
-      const opps = onLeft ? (f.right_team || []) : (f.left_team || []);
-      const oppNames = opps.map(p => (p.username ? `@${sanitizeHtml(p.username)}` : sanitizeHtml(p.firstName || String(p.userId)))).join(', ') || 'Unknown';
-      let outcome = '🤝 Draw';
-      if (f.winner_side === 'left') outcome = onLeft ? '🏆 Win' : '💀 Loss';
-      else if (f.winner_side === 'right') outcome = !onLeft ? '🏆 Win' : '💀 Loss';
+  for (const f of slice) {
+    const uid = Number(targetUser.user_id);
+    const onLeft = (f.left_team || []).some(p => Number(p?.userId) === uid);
+    const opps = onLeft ? (f.right_team || []) : (f.left_team || []);
+    const oppNames = opps.map(p => (p.username ? `@${sanitizeHtml(p.username)}` : sanitizeHtml(p.firstName || String(p.userId)))).join(', ') || 'Unknown';
+    let outcome = '🤝 Draw';
+    if (f.winner_side === 'left') outcome = onLeft ? '🏆 Win' : '💀 Loss';
+    else if (f.winner_side === 'right') outcome = !onLeft ? '🏆 Win' : '💀 Loss';
 
-      const wagerTxt = Number(f.wager_coins || 0) > 0 ? ` | 💰 ${formatCoins(f.wager_coins)}` : '';
-      const typeTag = f.type === 'quick' ? 'Ranked' : 'Custom';
-      lines += `• <code>#${f.fight_id}</code> [${typeTag} • ${sanitizeHtml(f.mode)}] ${outcome} vs <b>${oppNames}</b>${wagerTxt}\n`;
-    }
+    const wagerTxt = Number(f.wager_coins || 0) > 0 ? ` | 💰 ${formatCoins(f.wager_coins)}` : '';
+    const typeTag = f.type === 'quick' ? 'Ranked' : 'Custom';
+    lines += `• <code>#${f.fight_id}</code> [${typeTag} • ${sanitizeHtml(f.mode)}] ${outcome} vs <b>${oppNames}</b>${wagerTxt}\n`;
   }
 
   const text =
@@ -947,6 +1062,7 @@ function renderStatelessSummary(fightRecord) {
   const sessionView = {
     modeLabel,
     round: (fightRecord.rounds_log || []).length || 1,
+    maxRounds: MAX_ROUNDS,
     wagerCoins: Number(fightRecord.wager_coins || 0),
     hideHealth: false,
     leftTeam: allLeft,
@@ -968,7 +1084,7 @@ function renderStatelessSummary(fightRecord) {
 function renderStatelessLogs(fightRecord) {
   const rounds = fightRecord.rounds_log || [];
   let body = `📝 <b>Fight #${fightRecord.fight_id} — Complete Move-by-Move Logs</b>\n` +
-    `Mode: <b>${sanitizeHtml(fightRecord.mode)}</b> (${fightRecord.type.toUpperCase()})\n` +
+    `Mode: <b>${sanitizeHtml(fightRecord.mode)}</b> (${String(fightRecord.type || 'quick').toUpperCase()})\n` +
     `━━━━━━━━━━━━━━━━━━━━━\n`;
 
   if (rounds.length === 0) {
@@ -1052,7 +1168,6 @@ function renderStatelessAnalysis(fightRecord) {
       `\n`;
   }
 
-  // Round-by-round HP % & Damage Graph
   let graphLines = '';
   for (const r of rounds) {
     const lPctAvg = (r.leftSnapshot || []).length
@@ -1086,6 +1201,8 @@ export const fight = {
   cooldown: 5,
 
   async execute(ctx) {
+    await fightRepo.ensureFightSchema();
+
     const callerId = ctx.from.id;
     const caller = await userRepo.getOrInitUser(callerId, ctx.from.username, ctx.from.first_name);
 
@@ -1105,11 +1222,12 @@ export const fight = {
 
     // 2. /fight history [@user]
     if (sub === 'history') {
-      const argStr = tokens.slice(1).join(' ').trim();
+      const subArgs = tokens.slice(1).join(' ').trim();
       let targetUser = caller;
-      if (argStr) {
-        const resolved = await resolveTargetUser(ctx, argStr, {
-          fallbackToCaller: true,
+
+      if (subArgs) {
+        const resolved = await resolveTargetUser(ctx, subArgs, {
+          fallbackToCaller: false,
           allowBareUsername: true,
           allowNumericId: true
         });
@@ -1121,8 +1239,9 @@ export const fight = {
         const repFrom = ctx.message.reply_to_message.from;
         targetUser = await userRepo.getOrInitUser(repFrom.id, repFrom.username, repFrom.first_name);
       }
+
       const { text, keyboard } = await renderHistoryView(targetUser, callerId, 0);
-      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
+      return ctx.reply(text, { parse_mode: 'HTML', ...(keyboard ? { reply_markup: keyboard } : {}) });
     }
 
     // 3. /fight create [wager]
@@ -1150,15 +1269,17 @@ export const fight = {
         creatorId: callerId,
         wagerCoins,
         hp: 100,
+        maxRounds: MAX_ROUNDS,
         hideHealth: false,
         hideLogValues: false,
-        moves: new Set(['punch', 'kick', 'defend', 'flee']),
+        moves: ['punch', 'kick', 'defend', 'flee'],
         leftTeam: [createFighterState(caller, 100)],
         rightTeam: [],
-        readyUsers: new Set(),
+        readyUsers: [],
         createdAt: Date.now()
       };
-      activeSessions.set(sid, lobby);
+
+      await fightRepo.saveActiveFight(sid, lobby);
 
       return ctx.reply(renderCustomLobbyText(lobby), {
         parse_mode: 'HTML',
@@ -1170,7 +1291,6 @@ export const fight = {
     const quickInput = sub === 'quick' ? tokens.slice(1).join(' ') : rawInput;
     const quickTokens = quickInput ? quickInput.split(/\s+/).filter(Boolean) : [];
 
-    // Show usage guide if no target given and not a reply
     if (quickTokens.length === 0 && !isGenuineUserReply(ctx)) {
       return ctx.reply(
         `⚔️ <b>TeleMemer Fight 2.0</b>\n` +
@@ -1255,30 +1375,28 @@ export const fight = {
       targetId: Number(target.user_id),
       wagerCoins,
       hp: modeCfg.hp,
+      maxRounds: MAX_ROUNDS,
       hideHealth: modeCfg.hideHealth,
+      wasHiddenHealth: modeCfg.hideHealth,
       hideLogValues: modeCfg.hideLogValues,
       allowedMoves: [...modeCfg.moves],
       leftTeam: [createFighterState(caller, modeCfg.hp)],
       rightTeam: [createFighterState(target, modeCfg.hp)],
       round: 1,
-      pendingMoves: new Map(),
+      roundStartedAt: Date.now(),
+      pendingMoves: {},
       roundsLog: [],
       lastRoundLines: [],
       createdAt: Date.now()
     };
-    activeSessions.set(sid, challengeSession);
 
-    challengeSession.challengeTimer = setTimeout(() => {
-      const s = activeSessions.get(sid);
-      if (s && s.phase === 'challenge' && Date.now() - s.createdAt >= CHALLENGE_TTL_MS - 500) {
-        activeSessions.delete(sid);
-      }
-    }, CHALLENGE_TTL_MS);
-    challengeSession.challengeTimer.unref?.();
+    await fightRepo.saveActiveFight(sid, challengeSession);
 
     const callerTag = caller.username ? `@${sanitizeHtml(caller.username)}` : sanitizeHtml(caller.first_name);
     const targetTag = target.username ? `@${sanitizeHtml(target.username)}` : sanitizeHtml(target.first_name);
-    const wagerLine = wagerCoins > 0 ? `\n💰 <b>Wager:</b> ${formatCoins(wagerCoins)} each (Pot: ${formatCoins(wagerCoins * 2)})` : '\n💰 <b>Wager:</b> Friendly Ranked (0 coins)';
+    const wagerLine = wagerCoins > 0
+      ? `\n💰 <b>Wager:</b> ${formatCoins(wagerCoins)} each (Pot: ${formatCoins(wagerCoins * 2)})`
+      : '\n💰 <b>Wager:</b> Friendly Ranked (0 coins)';
 
     // CRITICAL: [❌ Cancel] on LEFT, [✅ Accept Fight] on RIGHT
     const kb = new InlineKeyboard()
@@ -1291,18 +1409,20 @@ export const fight = {
     return ctx.reply(
       `⚔️ <b>RANKED FIGHT CHALLENGE!</b>\n` +
       `<b>${callerTag}</b> challenged <b>${targetTag}</b> to a <b>${modeCfg.label}</b>!\n` +
-      `❤️ <b>Starting HP:</b> ${modeCfg.hp} HP${wagerLine}\n\n` +
+      `❤️ <b>Starting HP:</b> ${modeCfg.hp} HP | ⏱️ <b>Max Rounds:</b> ${MAX_ROUNDS}${wagerLine}\n\n` +
       `⏳ <i>${targetTag}, click <b>✅ Accept Fight</b> to enter the arena!</i>`,
       { parse_mode: 'HTML', reply_markup: kb }
     );
   },
 
   async handleCallback(ctx) {
+    await fightRepo.ensureFightSchema();
+
     const data = String(ctx.callbackQuery?.data || '');
     const parts = data.split(':');
     const prefix = parts[0];
     const action = parts[1];
-    const userId = ctx.from.id;
+    const userId = Number(ctx.from.id);
 
     // ==========================================
     // STATELESS POST-FIGHT HANDLERS (fpost:...)
@@ -1311,38 +1431,41 @@ export const fight = {
       const fightId = Number(parts[2]);
       const fightRecord = await fightRepo.getFightById(fightId);
       if (!fightRecord) {
-        return ctx.answerCallbackQuery({ text: '⚠️ Fight record not found.', show_alert: true });
+        return safeAnswerCallback(ctx, { text: '⚠️ Fight record not found.', show_alert: true });
       }
 
       if (action === 'logs') {
         const logsText = renderStatelessLogs(fightRecord);
         const kb = new InlineKeyboard().text('🔙 Back to Summary', `fpost:summary:${fightId}`);
-        await ctx.editMessageText(logsText, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
-        return ctx.answerCallbackQuery();
+        await safeEditMessage(ctx, logsText, { parse_mode: 'HTML', reply_markup: kb });
+        return safeAnswerCallback(ctx);
       }
 
       if (action === 'replay') {
         const roundIdx = Number(parts[3] || 0);
         const { text, keyboard } = renderStatelessReplay(fightRecord, roundIdx);
-        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }).catch(() => {});
-        return ctx.answerCallbackQuery();
+        await safeEditMessage(ctx, text, { parse_mode: 'HTML', reply_markup: keyboard });
+        return safeAnswerCallback(ctx);
       }
 
       if (action === 'analysis') {
         const analysisText = renderStatelessAnalysis(fightRecord);
         const kb = new InlineKeyboard().text('🔙 Back to Summary', `fpost:summary:${fightId}`);
-        await ctx.editMessageText(analysisText, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
-        return ctx.answerCallbackQuery();
+        await safeEditMessage(ctx, analysisText, { parse_mode: 'HTML', reply_markup: kb });
+        return safeAnswerCallback(ctx);
       }
+
+      const rematchKey = `rematch_${fightId}`;
+      const existingRematch = await fightRepo.getActiveFight(rematchKey);
+      const currentRematchVotes = existingRematch?.votes ? existingRematch.votes.length : 0;
 
       if (action === 'summary') {
         const summaryText = renderStatelessSummary(fightRecord);
-        const votes = rematchVotes.get(fightId)?.votes?.size || 0;
-        await ctx.editMessageText(summaryText, {
+        await safeEditMessage(ctx, summaryText, {
           parse_mode: 'HTML',
-          reply_markup: buildPostFightKeyboard(fightRecord, votes)
-        }).catch(() => {});
-        return ctx.answerCallbackQuery();
+          reply_markup: buildPostFightKeyboard(fightRecord, currentRematchVotes)
+        });
+        return safeAnswerCallback(ctx);
       }
 
       const leftIds = (fightRecord.left_team || []).map(p => Number(p.userId));
@@ -1351,26 +1474,26 @@ export const fight = {
 
       if (action === 'rep') {
         if (fightRecord.type !== 'quick') {
-          return ctx.answerCallbackQuery({ text: '🎖️ Reputation can only be awarded in Ranked Quick Fights!', show_alert: true });
+          return safeAnswerCallback(ctx, { text: '🎖️ Reputation can only be awarded in Ranked Quick Fights!', show_alert: true });
         }
         if (!allIds.includes(userId)) {
-          return ctx.answerCallbackQuery({ text: '🚫 Only participants of this fight can give reputation!', show_alert: true });
+          return safeAnswerCallback(ctx, { text: '🚫 Only participants of this fight can give reputation!', show_alert: true });
         }
 
         const oppId = leftIds.includes(userId) ? rightIds[0] : leftIds[0];
         if (!oppId) {
-          return ctx.answerCallbackQuery({ text: '⚠️ Opponent not found.', show_alert: true });
+          return safeAnswerCallback(ctx, { text: '⚠️ Opponent not found.', show_alert: true });
         }
 
         const repRes = await fightRepo.giveReputation(userId, oppId);
         if (repRes.alreadyGiven) {
-          return ctx.answerCallbackQuery({
+          return safeAnswerCallback(ctx, {
             text: '⚠️ You already gave this player +1 Reputation before! (Lifetime limit: 1 per user)',
             show_alert: true
           });
         }
 
-        return ctx.answerCallbackQuery({
+        return safeAnswerCallback(ctx, {
           text: `🎖️ Awarded +1 Fight Reputation! Their total rep is now ${repRes.totalRep}.`,
           show_alert: true
         });
@@ -1378,47 +1501,42 @@ export const fight = {
 
       if (action === 'rematch') {
         if (!allIds.includes(userId)) {
-          return ctx.answerCallbackQuery({ text: '🚫 Only fighters from this match can vote to Fight Again!', show_alert: true });
+          return safeAnswerCallback(ctx, { text: '🚫 Only fighters from this match can vote to Fight Again!', show_alert: true });
         }
 
-        let state = rematchVotes.get(fightId);
-        if (!state) {
-          state = { votes: new Set(), launched: false };
-          rematchVotes.set(fightId, state);
-        }
+        const state = existingRematch || { votes: [], launched: false };
         if (state.launched) {
-          return ctx.answerCallbackQuery({ text: '⚔️ Rematch already started!' });
+          return safeAnswerCallback(ctx, { text: '⚔️ Rematch already started!' });
         }
 
-        state.votes.add(userId);
+        const voteSet = new Set((state.votes || []).map(Number));
+        voteSet.add(userId);
+        state.votes = [...voteSet];
         const totalNeeded = allIds.length;
 
-        if (state.votes.size < totalNeeded) {
+        if (voteSet.size < totalNeeded) {
+          await fightRepo.saveActiveFight(rematchKey, state);
           const summaryText = renderStatelessSummary(fightRecord);
-          await ctx.editMessageText(summaryText, {
+          await safeEditMessage(ctx, summaryText, {
             parse_mode: 'HTML',
-            reply_markup: buildPostFightKeyboard(fightRecord, state.votes.size)
-          }).catch(() => {});
-          return ctx.answerCallbackQuery({ text: `🔄 Rematch vote registered (${state.votes.size}/${totalNeeded})!` });
+            reply_markup: buildPostFightKeyboard(fightRecord, voteSet.size)
+          });
+          return safeAnswerCallback(ctx, { text: `🔄 Rematch vote registered (${voteSet.size}/${totalNeeded})!` });
         }
 
-        // All fighters agreed -> Launch immediate rematch with exact same mode & settings!
-        state.launched = true;
+        // All fighters agreed -> validate wallets & launch rematch
         const wager = Number(fightRecord.wager_coins || 0);
         const freshUsers = new Map();
         for (const uid of allIds) {
           const u = await userRepo.getUser(uid);
           if (!u) {
-            state.launched = false;
-            return ctx.answerCallbackQuery({ text: '❌ A fighter account could not be loaded.', show_alert: true });
+            return safeAnswerCallback(ctx, { text: '❌ A fighter account could not be loaded.', show_alert: true });
           }
           if (Number(u.passive_mode) === 1) {
-            state.launched = false;
-            return ctx.answerCallbackQuery({ text: `🛡️ Rematch blocked: ${u.first_name || uid} enabled Passive Mode.`, show_alert: true });
+            return safeAnswerCallback(ctx, { text: `🛡️ Rematch blocked: ${u.first_name || uid} enabled Passive Mode.`, show_alert: true });
           }
           if (wager > 0 && Number(u.wallet || 0) < wager) {
-            state.launched = false;
-            return ctx.answerCallbackQuery({ text: `❌ Rematch cancelled: ${u.first_name || uid} no longer has ${formatCoins(wager)}.`, show_alert: true });
+            return safeAnswerCallback(ctx, { text: `❌ Rematch cancelled: ${u.first_name || uid} no longer has ${formatCoins(wager)}.`, show_alert: true });
           }
           freshUsers.set(uid, u);
         }
@@ -1428,15 +1546,20 @@ export const fight = {
             await userRepo.updateCoins(uid, {
               walletDelta: -wager,
               sourceCommand: '/fight',
-              details: `Rematch Fight Wager Escrow`
+              details: 'Rematch Fight Wager Escrow'
             });
           }
         }
 
+        state.launched = true;
+        await fightRepo.saveActiveFight(rematchKey, state);
+
         const preset = PRESET_MODES[fightRecord.mode];
         const customCfg = fightRecord.left_team?.[0]?.customConfig;
         const maxHp = preset ? preset.hp : (customCfg?.hp || fightRecord.left_team?.[0]?.maxHp || 100);
+        const hideHealth = preset ? preset.hideHealth : Boolean(customCfg?.hideHealth);
         const sid = nextSessionId();
+
         const rematchSession = {
           sid,
           phase: 'fighting',
@@ -1445,33 +1568,31 @@ export const fight = {
           modeLabel: preset ? preset.label : 'Custom Team Fight',
           wagerCoins: wager,
           hp: maxHp,
-          hideHealth: preset ? preset.hideHealth : Boolean(customCfg?.hideHealth),
+          maxRounds: MAX_ROUNDS,
+          hideHealth,
+          wasHiddenHealth: hideHealth,
           hideLogValues: preset ? preset.hideLogValues : Boolean(customCfg?.hideLogValues),
           allowedMoves: preset ? [...preset.moves] : [...(customCfg?.allowedMoves || ['punch', 'kick', 'defend', 'flee'])],
           leftTeam: leftIds.map(id => createFighterState(freshUsers.get(id), maxHp)),
           rightTeam: rightIds.map(id => createFighterState(freshUsers.get(id), maxHp)),
           round: 1,
-          pendingMoves: new Map(),
+          roundStartedAt: Date.now(),
+          pendingMoves: {},
           roundsLog: [],
           lastRoundLines: [],
           createdAt: Date.now()
         };
-        activeSessions.set(sid, rematchSession);
 
-        await ctx.editMessageText(renderBattleMessage(rematchSession, { isFinished: false }), {
+        await fightRepo.saveActiveFight(sid, rematchSession);
+
+        await safeEditMessage(ctx, renderBattleMessage(rematchSession, { isFinished: false }), {
           parse_mode: 'HTML',
           reply_markup: buildActiveMoveKeyboard(rematchSession)
-        }).catch(() => {});
+        });
 
-        scheduleTurnTimer(
-          rematchSession,
-          ctx.api,
-          ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id,
-          ctx.callbackQuery?.message?.message_id
-        );
-        return ctx.answerCallbackQuery({ text: '⚔️ Rematch started!' });
+        return safeAnswerCallback(ctx, { text: '⚔️ Rematch started!' });
       }
-      return ctx.answerCallbackQuery();
+      return safeAnswerCallback(ctx);
     }
 
     // ==========================================
@@ -1481,11 +1602,11 @@ export const fight = {
       const page = Number(parts[2] || 0);
       const ownerId = Number(parts[3]);
       if (ownerId && userId !== ownerId) {
-        return ctx.answerCallbackQuery({ text: "🚫 Run /fight ranking to browse your own view.", show_alert: true });
+        return safeAnswerCallback(ctx, { text: '🚫 Run /fight ranking to browse your own view.', show_alert: true });
       }
       const { text, keyboard } = await renderRankingView(userId, page);
-      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }).catch(() => {});
-      return ctx.answerCallbackQuery();
+      await safeEditMessage(ctx, text, { parse_mode: 'HTML', reply_markup: keyboard });
+      return safeAnswerCallback(ctx);
     }
 
     if (action === 'hs') {
@@ -1493,238 +1614,251 @@ export const fight = {
       const page = Number(parts[3] || 0);
       const ownerId = Number(parts[4]);
       if (ownerId && userId !== ownerId) {
-        return ctx.answerCallbackQuery({ text: "🚫 Run /fight history to browse your own view.", show_alert: true });
+        return safeAnswerCallback(ctx, { text: '🚫 Run /fight history to browse your own view.', show_alert: true });
       }
       const targetUser = await userRepo.getUser(targetUserId);
-      if (!targetUser) return ctx.answerCallbackQuery({ text: 'User not found.' });
+      if (!targetUser) return safeAnswerCallback(ctx, { text: 'User not found.' });
       const { text, keyboard } = await renderHistoryView(targetUser, ownerId || userId, page);
-      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard }).catch(() => {});
-      return ctx.answerCallbackQuery();
+      await safeEditMessage(ctx, text, { parse_mode: 'HTML', ...(keyboard ? { reply_markup: keyboard } : {}) });
+      return safeAnswerCallback(ctx);
     }
 
     // ==========================================
-    // ACTIVE SESSION HANDLERS (fight:...)
+    // POSTGRES-PERSISTED ACTIVE SESSIONS (fight:...)
     // ==========================================
     const sid = parts[2];
-    const session = activeSessions.get(sid);
+    const session = await fightRepo.getActiveFight(sid);
     if (!session) {
-      return ctx.answerCallbackQuery({ text: '⏳ This fight or lobby has expired or ended.', show_alert: true });
+      return safeAnswerCallback(ctx, { text: '⏳ This fight or lobby has ended.', show_alert: true });
     }
 
     // 1. Quick challenge Cancel / Accept
     if (action === 'can') {
-      if (userId !== session.callerId && userId !== session.targetId) {
-        return ctx.answerCallbackQuery({ text: '🚫 Only the challenger or opponent can cancel.', show_alert: true });
+      if (userId !== Number(session.callerId) && userId !== Number(session.targetId)) {
+        return safeAnswerCallback(ctx, { text: '🚫 Only the challenger or opponent can cancel.', show_alert: true });
       }
-      if (session.challengeTimer) {
-        clearTimeout(session.challengeTimer);
-        session.challengeTimer = null;
-      }
-      activeSessions.delete(sid);
-      await ctx.editMessageText('❌ Fight challenge was cancelled.', { parse_mode: 'HTML' }).catch(() => {});
-      return ctx.answerCallbackQuery({ text: 'Challenge cancelled.' });
+      await fightRepo.deleteActiveFight(sid);
+      await safeEditMessage(ctx, '❌ Fight challenge was cancelled.', { parse_mode: 'HTML' });
+      return safeAnswerCallback(ctx, { text: 'Challenge cancelled.' });
     }
 
     if (action === 'acc') {
-      if (userId !== session.targetId) {
-        return ctx.answerCallbackQuery({ text: '🚫 Only the challenged player can accept this fight!', show_alert: true });
+      if (userId !== Number(session.targetId)) {
+        return safeAnswerCallback(ctx, { text: '🚫 Only the challenged player can accept this fight!', show_alert: true });
       }
-      if (session.challengeTimer) {
-        clearTimeout(session.challengeTimer);
-        session.challengeTimer = null;
+      if (session.phase !== 'challenge') {
+        return safeAnswerCallback(ctx, { text: '⚔️ This fight has already started!' });
       }
+
       const freshCaller = await userRepo.getUser(session.callerId);
       const freshTarget = await userRepo.getUser(session.targetId);
 
       if (!freshCaller || !freshTarget) {
-        activeSessions.delete(sid);
-        return ctx.answerCallbackQuery({ text: '❌ Player data missing.', show_alert: true });
+        await fightRepo.deleteActiveFight(sid);
+        return safeAnswerCallback(ctx, { text: '❌ Player data missing.', show_alert: true });
       }
       if (Number(freshCaller.passive_mode) === 1 || Number(freshTarget.passive_mode) === 1) {
-        activeSessions.delete(sid);
-        await ctx.editMessageText('🛡️ Fight cancelled because one player enabled Passive Mode.', { parse_mode: 'HTML' }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: 'Passive Mode active.', show_alert: true });
+        await fightRepo.deleteActiveFight(sid);
+        await safeEditMessage(ctx, '🛡️ Fight cancelled because one player enabled Passive Mode.', { parse_mode: 'HTML' });
+        return safeAnswerCallback(ctx, { text: 'Passive Mode active.', show_alert: true });
       }
 
-      if (session.wagerCoins > 0) {
-        if (Number(freshCaller.wallet || 0) < session.wagerCoins || Number(freshTarget.wallet || 0) < session.wagerCoins) {
-          activeSessions.delete(sid);
-          await ctx.editMessageText('❌ Fight cancelled: one player no longer has enough coins to cover the wager.', { parse_mode: 'HTML' }).catch(() => {});
-          return ctx.answerCallbackQuery({ text: 'Insufficient wallet funds for wager.', show_alert: true });
+      const wagerCoins = Number(session.wagerCoins || 0);
+      if (wagerCoins > 0) {
+        if (Number(freshCaller.wallet || 0) < wagerCoins || Number(freshTarget.wallet || 0) < wagerCoins) {
+          await fightRepo.deleteActiveFight(sid);
+          await safeEditMessage(ctx, '❌ Fight cancelled: one player no longer has enough coins to cover the wager.', { parse_mode: 'HTML' });
+          return safeAnswerCallback(ctx, { text: 'Insufficient wallet funds for wager.', show_alert: true });
         }
         await userRepo.updateCoins(session.callerId, {
-          walletDelta: -session.wagerCoins,
+          walletDelta: -wagerCoins,
           sourceCommand: '/fight',
           details: 'Fight Wager Escrow'
         });
         await userRepo.updateCoins(session.targetId, {
-          walletDelta: -session.wagerCoins,
+          walletDelta: -wagerCoins,
           sourceCommand: '/fight',
           details: 'Fight Wager Escrow'
         });
       }
 
       session.phase = 'fighting';
+      session.round = 1;
+      session.maxRounds = session.maxRounds || MAX_ROUNDS;
+      session.roundStartedAt = Date.now();
+      session.pendingMoves = {};
       session.leftTeam = [createFighterState(freshCaller, session.hp)];
       session.rightTeam = [createFighterState(freshTarget, session.hp)];
 
-      await ctx.editMessageText(renderBattleMessage(session, { isFinished: false }), {
+      await fightRepo.saveActiveFight(sid, session);
+
+      await safeEditMessage(ctx, renderBattleMessage(session, { isFinished: false }), {
         parse_mode: 'HTML',
         reply_markup: buildActiveMoveKeyboard(session)
-      }).catch(() => {});
-
-      scheduleTurnTimer(
-        session,
-        ctx.api,
-        ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id,
-        ctx.callbackQuery?.message?.message_id
-      );
-      return ctx.answerCallbackQuery({ text: '⚔️ Fight accepted! Pick your move!' });
+      });
+      return safeAnswerCallback(ctx, { text: '⚔️ Fight accepted! Pick your move!' });
     }
 
     // 2. Custom Lobby Handlers
     if (session.phase === 'lobby') {
       const clicker = await userRepo.getOrInitUser(userId, ctx.from.username, ctx.from.first_name);
-      const isJoined = session.leftTeam.some(f => f.userId === userId) || session.rightTeam.some(f => f.userId === userId);
+      const isJoined = session.leftTeam.some(f => Number(f.userId) === userId) || session.rightTeam.some(f => Number(f.userId) === userId);
       const totalJoined = session.leftTeam.length + session.rightTeam.length;
 
       if (action === 'cl') {
-        if (userId !== session.creatorId) {
-          return ctx.answerCallbackQuery({ text: '🚫 Only the lobby creator can cancel the lobby.', show_alert: true });
+        if (userId !== Number(session.creatorId)) {
+          return safeAnswerCallback(ctx, { text: '🚫 Only the lobby creator can cancel the lobby.', show_alert: true });
         }
-        activeSessions.delete(sid);
-        await ctx.editMessageText('❌ Custom Team Fight lobby cancelled.', { parse_mode: 'HTML' }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: 'Lobby cancelled.' });
+        await fightRepo.deleteActiveFight(sid);
+        await safeEditMessage(ctx, '❌ Custom Team Fight lobby cancelled.', { parse_mode: 'HTML' });
+        return safeAnswerCallback(ctx, { text: 'Lobby cancelled.' });
       }
 
       if (action === 'jl' || action === 'jr') {
         if (Number(clicker.passive_mode) === 1) {
-          return ctx.answerCallbackQuery({ text: '🛡️ Disable Passive Mode before joining a fight!', show_alert: true });
+          return safeAnswerCallback(ctx, { text: '🛡️ Disable Passive Mode before joining a fight!', show_alert: true });
         }
-        if (session.wagerCoins > 0 && Number(clicker.wallet || 0) < session.wagerCoins) {
-          return ctx.answerCallbackQuery({ text: `❌ Need ${formatCoins(session.wagerCoins)} in wallet to join!`, show_alert: true });
+        if (Number(session.wagerCoins || 0) > 0 && Number(clicker.wallet || 0) < Number(session.wagerCoins)) {
+          return safeAnswerCallback(ctx, { text: `❌ Need ${formatCoins(session.wagerCoins)} in wallet to join!`, show_alert: true });
         }
         if (!isJoined && totalJoined >= 6) {
-          return ctx.answerCallbackQuery({ text: '❌ Lobby is full (max 6 players)!', show_alert: true });
+          return safeAnswerCallback(ctx, { text: '❌ Lobby is full (max 6 players)!', show_alert: true });
         }
 
-        session.leftTeam = session.leftTeam.filter(f => f.userId !== userId);
-        session.rightTeam = session.rightTeam.filter(f => f.userId !== userId);
+        session.leftTeam = session.leftTeam.filter(f => Number(f.userId) !== userId);
+        session.rightTeam = session.rightTeam.filter(f => Number(f.userId) !== userId);
         const fObj = createFighterState(clicker, session.hp);
         if (action === 'jl') session.leftTeam.push(fObj);
         else session.rightTeam.push(fObj);
-        session.readyUsers.clear();
+        session.readyUsers = [];
 
-        await ctx.editMessageText(renderCustomLobbyText(session), {
+        await fightRepo.saveActiveFight(sid, session);
+        await safeEditMessage(ctx, renderCustomLobbyText(session), {
           parse_mode: 'HTML',
           reply_markup: buildCustomLobbyKeyboard(session)
-        }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: action === 'jl' ? 'Joined Left Team!' : 'Joined Right Team!' });
+        });
+        return safeAnswerCallback(ctx, { text: action === 'jl' ? 'Joined Left Team!' : 'Joined Right Team!' });
       }
 
       if (action === 'tm') {
-        if (!isJoined && userId !== session.creatorId) {
-          return ctx.answerCallbackQuery({ text: '🚫 Join the lobby to customize rules!', show_alert: true });
+        if (!isJoined && userId !== Number(session.creatorId)) {
+          return safeAnswerCallback(ctx, { text: '🚫 Join the lobby to customize rules!', show_alert: true });
         }
         const mv = parts[3];
-        if (!CUSTOM_TOGGLE_MOVES.includes(mv)) return ctx.answerCallbackQuery();
-        if (session.moves.has(mv)) {
-          if (session.moves.size <= 1) {
-            return ctx.answerCallbackQuery({ text: '⚠️ Keep at least 1 move enabled!', show_alert: true });
+        if (!CUSTOM_TOGGLE_MOVES.includes(mv)) return safeAnswerCallback(ctx);
+        const movesSet = new Set(getLobbyMovesList(session));
+        if (movesSet.has(mv)) {
+          if (movesSet.size <= 1) {
+            return safeAnswerCallback(ctx, { text: '⚠️ Keep at least 1 move enabled!', show_alert: true });
           }
-          session.moves.delete(mv);
+          movesSet.delete(mv);
         } else {
-          session.moves.add(mv);
+          movesSet.add(mv);
         }
-        session.readyUsers.clear(); // Any rule change resets ready count (0/N)!
-        await ctx.editMessageText(renderCustomLobbyText(session), {
+        session.moves = [...movesSet];
+        session.readyUsers = [];
+
+        await fightRepo.saveActiveFight(sid, session);
+        await safeEditMessage(ctx, renderCustomLobbyText(session), {
           parse_mode: 'HTML',
           reply_markup: buildCustomLobbyKeyboard(session)
-        }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: 'Move rules updated — Ready count reset!' });
+        });
+        return safeAnswerCallback(ctx, { text: 'Move rules updated — Ready count reset!' });
       }
 
       if (action === 'hp') {
-        if (!isJoined && userId !== session.creatorId) {
-          return ctx.answerCallbackQuery({ text: '🚫 Join the lobby to customize health!', show_alert: true });
+        if (!isJoined && userId !== Number(session.creatorId)) {
+          return safeAnswerCallback(ctx, { text: '🚫 Join the lobby to customize health!', show_alert: true });
         }
         const currIdx = CUSTOM_HEALTH_STEPS.indexOf(session.hp);
         const nextHp = CUSTOM_HEALTH_STEPS[(currIdx + 1) % CUSTOM_HEALTH_STEPS.length];
         session.hp = nextHp;
         session.leftTeam.forEach(f => { f.hp = nextHp; f.maxHp = nextHp; });
         session.rightTeam.forEach(f => { f.hp = nextHp; f.maxHp = nextHp; });
-        session.readyUsers.clear();
+        session.readyUsers = [];
 
-        await ctx.editMessageText(renderCustomLobbyText(session), {
+        await fightRepo.saveActiveFight(sid, session);
+        await safeEditMessage(ctx, renderCustomLobbyText(session), {
           parse_mode: 'HTML',
           reply_markup: buildCustomLobbyKeyboard(session)
-        }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: `Starting HP set to ${nextHp}! Ready reset.` });
+        });
+        return safeAnswerCallback(ctx, { text: `Starting HP set to ${nextHp}! Ready reset.` });
       }
 
       if (action === 'hh') {
-        if (!isJoined && userId !== session.creatorId) {
-          return ctx.answerCallbackQuery({ text: '🚫 Join the lobby to edit settings!', show_alert: true });
+        if (!isJoined && userId !== Number(session.creatorId)) {
+          return safeAnswerCallback(ctx, { text: '🚫 Join the lobby to edit settings!', show_alert: true });
         }
         session.hideHealth = !session.hideHealth;
-        session.readyUsers.clear();
-        await ctx.editMessageText(renderCustomLobbyText(session), {
+        session.wasHiddenHealth = session.hideHealth;
+        session.readyUsers = [];
+
+        await fightRepo.saveActiveFight(sid, session);
+        await safeEditMessage(ctx, renderCustomLobbyText(session), {
           parse_mode: 'HTML',
           reply_markup: buildCustomLobbyKeyboard(session)
-        }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: `Hide Health: ${session.hideHealth ? 'ON' : 'OFF'}` });
+        });
+        return safeAnswerCallback(ctx, { text: `Hide Health: ${session.hideHealth ? 'ON' : 'OFF'}` });
       }
 
       if (action === 'hl') {
-        if (!isJoined && userId !== session.creatorId) {
-          return ctx.answerCallbackQuery({ text: '🚫 Join the lobby to edit settings!', show_alert: true });
+        if (!isJoined && userId !== Number(session.creatorId)) {
+          return safeAnswerCallback(ctx, { text: '🚫 Join the lobby to edit settings!', show_alert: true });
         }
         session.hideLogValues = !session.hideLogValues;
-        session.readyUsers.clear();
-        await ctx.editMessageText(renderCustomLobbyText(session), {
+        session.readyUsers = [];
+
+        await fightRepo.saveActiveFight(sid, session);
+        await safeEditMessage(ctx, renderCustomLobbyText(session), {
           parse_mode: 'HTML',
           reply_markup: buildCustomLobbyKeyboard(session)
-        }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: `Hide Log Values: ${session.hideLogValues ? 'ON' : 'OFF'}` });
+        });
+        return safeAnswerCallback(ctx, { text: `Hide Log Values: ${session.hideLogValues ? 'ON' : 'OFF'}` });
       }
 
       if (action === 'go') {
         if (!isJoined) {
-          return ctx.answerCallbackQuery({ text: '🚫 Join Left or Right Team first!', show_alert: true });
+          return safeAnswerCallback(ctx, { text: '🚫 Join Left or Right Team first!', show_alert: true });
         }
         if (session.leftTeam.length === 0 || session.rightTeam.length === 0) {
-          return ctx.answerCallbackQuery({ text: '⚠️ Need at least 1 player on Left AND 1 player on Right to start!', show_alert: true });
-        }
-        if (session.readyUsers.has(userId)) {
-          session.readyUsers.delete(userId);
-        } else {
-          session.readyUsers.add(userId);
+          return safeAnswerCallback(ctx, { text: '⚠️ Need at least 1 player on Left AND 1 player on Right to start!', show_alert: true });
         }
 
-        if (session.readyUsers.size < totalJoined) {
-          await ctx.editMessageText(renderCustomLobbyText(session), {
+        const readySet = getReadySet(session);
+        if (readySet.has(userId)) {
+          readySet.delete(userId);
+        } else {
+          readySet.add(userId);
+        }
+        setReadyList(session, readySet);
+
+        if (readySet.size < totalJoined) {
+          await fightRepo.saveActiveFight(sid, session);
+          await safeEditMessage(ctx, renderCustomLobbyText(session), {
             parse_mode: 'HTML',
             reply_markup: buildCustomLobbyKeyboard(session)
-          }).catch(() => {});
-          return ctx.answerCallbackQuery({ text: `Ready (${session.readyUsers.size}/${totalJoined})` });
+          });
+          return safeAnswerCallback(ctx, { text: `Ready (${readySet.size}/${totalJoined})` });
         }
 
-        // All players ready -> validate wallets & deduct wagers if any, then start fight!
+        // All players ready -> validate wallets & deduct wagers if any
         const allParticipants = [...session.leftTeam, ...session.rightTeam];
-        if (session.wagerCoins > 0) {
+        const wagerCoins = Number(session.wagerCoins || 0);
+        if (wagerCoins > 0) {
           for (const p of allParticipants) {
             const fresh = await userRepo.getUser(p.userId);
-            if (!fresh || Number(fresh.wallet || 0) < session.wagerCoins) {
-              session.readyUsers.clear();
-              return ctx.answerCallbackQuery({
-                text: `❌ ${p.firstName} lacks ${formatCoins(session.wagerCoins)} to start!`,
+            if (!fresh || Number(fresh.wallet || 0) < wagerCoins) {
+              session.readyUsers = [];
+              await fightRepo.saveActiveFight(sid, session);
+              return safeAnswerCallback(ctx, {
+                text: `❌ ${p.firstName} lacks ${formatCoins(wagerCoins)} to start!`,
                 show_alert: true
               });
             }
           }
           for (const p of allParticipants) {
             await userRepo.updateCoins(p.userId, {
-              walletDelta: -session.wagerCoins,
+              walletDelta: -wagerCoins,
               sourceCommand: '/fight',
               details: 'Custom Fight Wager Escrow'
             });
@@ -1732,78 +1866,110 @@ export const fight = {
         }
 
         session.phase = 'fighting';
-        session.allowedMoves = [...session.moves];
+        session.allowedMoves = getLobbyMovesList(session);
+        session.maxRounds = session.maxRounds || MAX_ROUNDS;
+        session.wasHiddenHealth = Boolean(session.hideHealth);
         session.round = 1;
-        session.pendingMoves = new Map();
+        session.roundStartedAt = Date.now();
+        session.pendingMoves = {};
         session.roundsLog = [];
         session.lastRoundLines = [];
 
-        await ctx.editMessageText(renderBattleMessage(session, { isFinished: false }), {
+        await fightRepo.saveActiveFight(sid, session);
+        await safeEditMessage(ctx, renderBattleMessage(session, { isFinished: false }), {
           parse_mode: 'HTML',
           reply_markup: buildActiveMoveKeyboard(session)
-        }).catch(() => {});
-
-        scheduleTurnTimer(
-          session,
-          ctx.api,
-          ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id,
-          ctx.callbackQuery?.message?.message_id
-        );
-        return ctx.answerCallbackQuery({ text: '⚔️ Custom Team Fight Started!' });
+        });
+        return safeAnswerCallback(ctx, { text: '⚔️ Custom Team Fight Started!' });
       }
-      return ctx.answerCallbackQuery();
+      return safeAnswerCallback(ctx);
     }
 
-    // 3. Active Simultaneous Fight Move Submission (`fight:mv:<sid>:<round>:<move>`)
+    // 3. Force Turn Button (`fight:ft:<sid>:<round>`)
+    if (action === 'ft' && session.phase === 'fighting') {
+      const btnRound = Number(parts[3]);
+      if (btnRound !== Number(session.round)) {
+        return safeAnswerCallback(ctx, { text: '⏳ That round already resolved!' });
+      }
+      const aliveFighters = getAllAliveFighters(session);
+      const clicker = aliveFighters.find(f => Number(f.userId) === userId);
+      if (!clicker) {
+        return safeAnswerCallback(ctx, { text: '🚫 Only active fighters in this match can force a turn!', show_alert: true });
+      }
+
+      const elapsed = Date.now() - Number(session.roundStartedAt || session.createdAt || 0);
+      if (elapsed < FORCE_TURN_WAIT_MS) {
+        const secsLeft = Math.max(1, Math.ceil((FORCE_TURN_WAIT_MS - elapsed) / 1000));
+        return safeAnswerCallback(ctx, {
+          text: `⏳ Give your opponent time to pick! Force Turn unlocks in ${secsLeft}s.`,
+          show_alert: false
+        });
+      }
+
+      const { finished } = await resolveRoundAndRender(session, ctx, { forceAutoUnpicked: true });
+      return safeAnswerCallback(ctx, { text: finished ? '🏁 Fight finished!' : '⏰ AFK turn forced & resolved!' });
+    }
+
+    // 4. Active Simultaneous Fight Move Submission (`fight:mv:<sid>:<round>:<move>`)
     if (action === 'mv' && session.phase === 'fighting') {
       const btnRound = Number(parts[3]);
       const move = parts[4];
 
-      if (btnRound !== session.round) {
-        return ctx.answerCallbackQuery({ text: '⏳ That round already resolved!' });
+      if (btnRound !== Number(session.round)) {
+        return safeAnswerCallback(ctx, { text: '⏳ That round already resolved!' });
       }
 
       const aliveFighters = getAllAliveFighters(session);
-      const fighter = aliveFighters.find(f => f.userId === userId);
+      const fighter = aliveFighters.find(f => Number(f.userId) === userId);
       if (!fighter) {
-        return ctx.answerCallbackQuery({ text: '🚫 You are not an active fighter in this match!', show_alert: true });
+        return safeAnswerCallback(ctx, { text: '🚫 You are not an active fighter in this match!', show_alert: true });
       }
 
-      if (session.pendingMoves.has(userId)) {
-        return ctx.answerCallbackQuery({ text: '✅ You already locked in your move this round! Waiting for others...' });
+      if (hasPendingMove(session, userId)) {
+        return safeAnswerCallback(ctx, {
+          text: '✅ You already locked in your move for this round! Waiting for opponent...',
+          show_alert: false
+        });
       }
 
-      if (move === 'defend' && fighter.defendCd > 0) {
-        return ctx.answerCallbackQuery({
-          text: `🛡️ Defend is on cooldown (${fighter.defendCd} turn${fighter.defendCd > 1 ? 's' : ''} left)! Pick another move.`,
+      if (move === 'defend' && Number(fighter.defendCd || 0) > 0) {
+        return safeAnswerCallback(ctx, {
+          text: `⏳ That move is on cooldown for ${fighter.defendCd} more turn(s)!`,
           show_alert: true
         });
       }
 
-      if (move === 'kiss' && fighter.kissCd > 0) {
-        return ctx.answerCallbackQuery({
-          text: `💋 Kiss is on cooldown (${fighter.kissCd} turn${fighter.kissCd > 1 ? 's' : ''} left)! Pick another move.`,
+      if (move === 'kiss' && Number(fighter.kissCd || 0) > 0) {
+        return safeAnswerCallback(ctx, {
+          text: `⏳ That move is on cooldown for ${fighter.kissCd} more turn(s)!`,
           show_alert: true
         });
       }
 
-      session.pendingMoves.set(userId, { move, auto: false });
+      setPendingMove(session, userId, { move, auto: false });
 
-      if (session.pendingMoves.size < aliveFighters.length) {
-        // Update message silently with (✅ ready) without revealing the move picked
-        await ctx.editMessageText(renderBattleMessage(session, { isFinished: false }), {
+      const pendingCount = countPendingMoves(session);
+      const allChosen = pendingCount >= aliveFighters.length;
+      const fleeTriggered = move === 'flee';
+
+      if (!allChosen && !fleeTriggered) {
+        await fightRepo.saveActiveFight(sid, session);
+        await safeEditMessage(ctx, renderBattleMessage(session, { isFinished: false }), {
           parse_mode: 'HTML',
           reply_markup: buildActiveMoveKeyboard(session)
-        }).catch(() => {});
-        return ctx.answerCallbackQuery({ text: `✅ Move locked (${session.pendingMoves.size}/${aliveFighters.length} ready)` });
+        });
+        return safeAnswerCallback(ctx, {
+          text: `✅ Move locked in! (${pendingCount}/${aliveFighters.length} ready)`,
+          show_alert: false
+        });
       }
 
-      // ALL alive fighters have picked -> resolve round simultaneously!
-      await resolveRoundAndRender(session, { ctx });
-      return ctx.answerCallbackQuery({ text: '⚔️ Round resolved!' }).catch(() => {});
+      // ALL alive fighters chose (or someone chose Flee) -> resolve immediately!
+      const { finished } = await resolveRoundAndRender(session, ctx, { forceAutoUnpicked: false });
+      return safeAnswerCallback(ctx, { text: finished ? '🏁 Fight ended!' : '⚔️ Round resolved!' });
     }
 
-    return ctx.answerCallbackQuery();
+    return safeAnswerCallback(ctx);
   }
 };
 
