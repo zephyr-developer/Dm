@@ -1,14 +1,24 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
+import fightRepo from '../../database/fightRepo.js';
 import { formatCoins, formatNumber, sanitizeHtml } from '../../utils/formatters.js';
 
 async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
   const isGlobal = scope === 'global';
-  const isCoins = type === 'coins';
   const targetChatId = isGlobal ? null : chatId;
 
-  const rows = await userRepo.getLeaderboard(targetChatId, type, 10);
-  const title = isCoins ? '🪙 Richest Meme Lords' : '⭐ Top Level Masters';
+  let rows = [];
+  let title = '🪙 Richest Meme Lords';
+  if (type === 'level') {
+    title = '⭐ Top Level Masters';
+    rows = await userRepo.getLeaderboard(targetChatId, 'level', 10);
+  } else if (type === 'fight') {
+    title = '🎖️ Top Fighters (Rep & Ranks)';
+    rows = await fightRepo.getFightLeaderboard(targetChatId, 10);
+  } else {
+    rows = await userRepo.getLeaderboard(targetChatId, 'coins', 10);
+  }
+
   const scopeLabel = isGlobal ? '🌍 Global' : '🏠 This Group';
 
   let text = `🏆 <b>Leaderboard: ${title}</b> (${scopeLabel})\n`;
@@ -23,9 +33,16 @@ async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
       const isPrem = Number(row.premium_until || 0) > Date.now();
       const premBadge = isPrem ? ' 💎' : '';
       const name = sanitizeHtml(row.first_name || row.username || `Player ${row.user_id}`);
-      const valStr = isCoins
-        ? formatCoins(row.total_coins || (Number(row.wallet) + Number(row.bank)))
-        : `Lvl ${row.level} (${formatNumber(row.xp)} XP)`;
+
+      let valStr = '';
+      if (type === 'fight') {
+        const fMeta = fightRepo.getRankMeta(row.fight_rank || 'Bronze');
+        valStr = `${fMeta.emoji} ${fMeta.name} • <b>${Number(row.fight_score || 0)} pts</b> • 🎖️ ${Number(row.fight_rep || 0)} (${Number(row.fight_wins || 0)}W/${Number(row.fight_losses || 0)}L)`;
+      } else if (type === 'level') {
+        valStr = `Lvl ${row.level} (${formatNumber(row.xp)} XP)`;
+      } else {
+        valStr = formatCoins(row.total_coins || (Number(row.wallet) + Number(row.bank)));
+      }
 
       text += `${rankBadge} <b>${name}</b>${premBadge} — ${valStr}\n`;
     });
@@ -39,10 +56,10 @@ async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
       isGlobal ? '🏠 Show This Group' : '🌍 Show Global',
       `leaderboard:scope:${isGlobal ? 'group' : 'global'}:${type}:${callerUserId}`
     )
-    .text(
-      isCoins ? '⭐ Show Levels' : '🪙 Show Coins',
-      `leaderboard:type:${scope}:${isCoins ? 'level' : 'coins'}:${callerUserId}`
-    );
+    .row()
+    .text(type === 'coins' ? '✅ 🪙 Coins' : '🪙 Coins', `leaderboard:type:${scope}:coins:${callerUserId}`)
+    .text(type === 'level' ? '✅ ⭐ Levels' : '⭐ Levels', `leaderboard:type:${scope}:level:${callerUserId}`)
+    .text(type === 'fight' ? '✅ 🎖️ Fight Rep & Ranks' : '🎖️ Fight Rep & Ranks', `leaderboard:type:${scope}:fight:${callerUserId}`);
 
   return { text, keyboard };
 }
@@ -50,7 +67,7 @@ async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
 export const leaderboard = {
   name: 'leaderboard',
   aliases: ['lb'],
-  description: 'View top wealth and level rankings globally or in this group',
+  description: 'View top wealth, level, and Fight 2.0 rankings globally or in this group',
   cooldown: 5,
 
   async execute(ctx) {
@@ -77,11 +94,11 @@ export const leaderboard = {
     const chatId = ctx.chat.id;
 
     if (toggleField === 'scope') {
-      scope = parts[2]; // new scope
+      scope = parts[2];
       type = parts[3];
     } else if (toggleField === 'type') {
       scope = parts[2];
-      type = parts[3]; // new type
+      type = parts[3];
     }
 
     const { text, keyboard } = await buildLeaderboardMessage(chatId, scope, type, callerUserId);

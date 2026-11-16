@@ -82,10 +82,13 @@ export const blackjack = {
 
     if (!betStr) {
       const limitLabel = isUltimate ? '🎰 No Limit (Ultimate Gambler)' : 'Max Bet: 🪙 100,000,000';
+      const vipPerkLine = isUltimate
+        ? `\n🔥 <b>VIP Payouts:</b> Normal Win <b>2.5x</b> | Natural 21 <b>3.5x</b> | VIP Shoe Luck Active`
+        : '';
       return ctx.reply(
         (isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '') +
         `🃏 <b>Blackjack (21)</b>\n` +
-        `Usage: <code>/bj &lt;bet|half|all&gt;</code> (${limitLabel})\n\n` +
+        `Usage: <code>/bj &lt;bet|half|all&gt;</code> (${limitLabel})${vipPerkLine}\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         { parse_mode: 'HTML' }
       );
@@ -132,19 +135,21 @@ export const blackjack = {
     const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
 
-    // Check Natural Blackjack (21 on 2 cards)
+    // Check Natural Blackjack (21 on 2 cards): 3.5x for Ultimate Gambler, 2.5x (3:2) standard
     if (playerScore === 21) {
-      const payout = Math.floor(bet * 2.5);
+      const natMult = isUltimate ? 3.5 : 2.5;
+      const payout = Math.floor(bet * natMult);
       const afterWinUser = await userRepo.updateCoins(userId, {
         walletDelta: payout,
         sourceCommand: '/blackjack',
-        details: 'Natural Blackjack 3:2 Payout'
+        details: isUltimate ? 'Natural Blackjack VIP 3.5x Payout' : 'Natural Blackjack 3:2 Payout'
       });
 
+      const payoutLabel = isUltimate ? 'Payout (VIP 3.5x)' : 'Payout (3:2)';
       const winMsg = `${eliteBanner}🃏 <b>BLACKJACK! NATURAL 21!</b> 🎉${clampNotice}\n\n` +
         `👤 <b>Your Hand:</b> ${renderHand(playerCards)} (Score: <b>21</b>)\n` +
         `🤖 <b>Dealer Hand:</b> ${renderHand(dealerCards)} (Score: <b>${calculateHand(dealerCards)}</b>)\n\n` +
-        `💰 <b>Payout (3:2):</b> +${formatCoins(payout)}!\n` +
+        `💰 <b>${payoutLabel}:</b> +${formatCoins(payout)}!\n` +
         `👛 <b>New Wallet:</b> ${formatCoins(afterWinUser.wallet)}`;
 
       return ctx.reply(winMsg, {
@@ -323,6 +328,11 @@ async function resolveDealerTurn(ctx, game, targetUserId) {
     let nextCard = game.deck.pop();
     if (luckInfo.totalBonus >= 50 && dealerScore >= 12 && Math.random() < 0.50) {
       nextCard = { suit: '♠️', val: '10', score: 10 };
+    } else if (game.isUltimate && game.deck.length > 0 && nextCard) {
+      const prospectiveScore = calculateHand([...game.dealerCards, nextCard]);
+      if ((prospectiveScore === 20 || prospectiveScore === 21) && Math.random() < 0.30) {
+        nextCard = game.deck.pop();
+      }
     }
     game.dealerCards.push(nextCard);
     dealerScore = calculateHand(game.dealerCards);
@@ -331,20 +341,22 @@ async function resolveDealerTurn(ctx, game, targetUserId) {
   let outcomeTitle = '';
   let payout = 0;
   let logDetail = '';
+  const winMultiplier = game.isUltimate ? 2.5 : 2;
+  const winTag = game.isUltimate ? ' (VIP 2.5x)' : '';
 
   if (dealerScore > 21) {
-    outcomeTitle = '🎉 <b>DEALER BUSTED! YOU WIN!</b>';
-    payout = game.bet * 2;
-    logDetail = 'Won Blackjack (Dealer Bust)';
+    outcomeTitle = `🎉 <b>DEALER BUSTED! YOU WIN!${winTag}</b>`;
+    payout = Math.floor(game.bet * winMultiplier);
+    logDetail = `Won Blackjack (Dealer Bust${winTag})`;
     await userRepo.updateCoins(targetUserId, {
       walletDelta: payout,
       sourceCommand: '/blackjack',
       details: logDetail
     });
   } else if (playerScore > dealerScore) {
-    outcomeTitle = '🎉 <b>YOU WIN!</b>';
-    payout = game.bet * 2;
-    logDetail = `Won Blackjack (${playerScore} vs ${dealerScore})`;
+    outcomeTitle = `🎉 <b>YOU WIN!${winTag}</b>`;
+    payout = Math.floor(game.bet * winMultiplier);
+    logDetail = `Won Blackjack (${playerScore} vs ${dealerScore}${winTag})`;
     await userRepo.updateCoins(targetUserId, {
       walletDelta: payout,
       sourceCommand: '/blackjack',

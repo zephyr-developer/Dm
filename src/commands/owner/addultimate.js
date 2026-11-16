@@ -45,7 +45,7 @@ export const addultimate = {
   name: 'addultimate',
   aliases: ['giveultimate', 'addelite'],
   category: 'owner',
-  description: 'Owner: Grant Ultimate Gambler (Elite) membership with unlimited betting table limits',
+  description: 'Owner: Grant Ultimate Gambler (Elite) membership (Unlimited Bets, VIP Luck & Supercharged Multipliers)',
   cooldown: 0,
 
   async execute(ctx) {
@@ -125,8 +125,11 @@ export const addultimate = {
     return ctx.reply(
       `🎰 <b>Confirm Ultimate Gambler Membership</b>\n` +
       `Grant <b>🎰 ULTIMATE GAMBLER (Elite)</b> to <b>${sanitizeHtml(targetDisplay)}</b> (<code>${target.user_id}</code>)?\n` +
-      `⏳ <b>Duration:</b> <code>${sanitizeHtml(parsedDur.label)}</code>\n` +
-      `🔓 <b>Perk:</b> No 100M max bet table limit on any gambling command!`,
+      `⏳ <b>Duration:</b> <code>${sanitizeHtml(parsedDur.label)}</code>\n\n` +
+      `🔥 <b>Elite Perks Included:</b>\n` +
+      `1. <b>Unlimited Max Bets</b> (No 100M table cap)\n` +
+      `2. <b>VIP Casino Luck Boost</b> across all 4 gambling games\n` +
+      `3. <b>Supercharged Multipliers</b> (Up to <code>15x</code> Scratch, <code>50x</code> Slots, <code>3.5x</code> Blackjack, and <code>2x/10x</code> High-Low!)`,
       { parse_mode: 'HTML', reply_markup: keyboard }
     );
   },
@@ -184,14 +187,17 @@ export const addultimate = {
       pending.targetId,
       `🎰 <b>CONGRATULATIONS!</b> 🎰\n` +
       `The Bot Owner (@tzhunyuan) has granted you <b>🎰 ULTIMATE GAMBLER (Elite Membership)</b> for <b>${sanitizeHtml(pending.durationLabel)}</b>!\n\n` +
-      `🔥 <b>Elite Perk Unlocked:</b> The 🪙 100,000,000 table bet limit has been completely REMOVED for your account across <code>/blackjack</code>, <code>/slots</code>, <code>/scratch</code>, and <code>/highlow</code>!`
+      `🔥 <b>Your Elite Casino Perks:</b>\n` +
+      `1. 🔓 <b>Unlimited Max Bets:</b> The 🪙 100,000,000 table bet cap is completely REMOVED!\n` +
+      `2. 🍀 <b>VIP Casino Luck Boost:</b> Boosted win rates across <code>/scratch</code>, <code>/slots</code>, <code>/blackjack</code>, and <code>/highlow</code>!\n` +
+      `3. ⚡ <b>Supercharged Multipliers:</b> Up to <b>15x</b> Scratch, <b>50x</b> Slots Jackpot, <b>2.5x / 3.5x</b> Blackjack, and <b>2x / 10x</b> High-Low!`
     );
 
     await ctx.editMessageText(
       `🎰 <b>ULTIMATE GAMBLER GRANTED!</b>\n` +
       `👤 <b>Member:</b> <b>${sanitizeHtml(pending.targetDisplay)}</b> (<code>${pending.targetId}</code>)\n` +
       `⏳ <b>Granted Duration:</b> <code>${sanitizeHtml(pending.durationLabel)}</code>\n` +
-      `🔥 <i>100M max bet limits removed &amp; Elite high-roller payouts exempted from auto-freeze.</i>`,
+      `🔥 <i>Unlimited bets, VIP Casino Luck Boost &amp; Supercharged Multipliers (15x Scratch, 50x Slots, 3.5x BJ, 2x/10x High-Low) activated!</i>`,
       { parse_mode: 'HTML' }
     );
 

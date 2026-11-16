@@ -66,7 +66,9 @@ export const highlow = {
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
     const limitWord = isUltimate ? 'No Limit' : 'Max: 100M';
     const betNotice = bet > 0
-      ? `💰 <b>Active Bet:</b> ${formatCoins(bet)} (Win: <b>1.4x</b> | Jackpot: <b>5x</b>)${clampNotice}\n\n`
+      ? (isUltimate
+        ? `💰 <b>Active Bet:</b> ${formatCoins(bet)} (VIP Win: <b>2x</b> | Jackpot: <b>10x</b>)${clampNotice}\n\n`
+        : `💰 <b>Active Bet:</b> ${formatCoins(bet)} (Win: <b>1.4x</b> | Jackpot: <b>5x</b>)${clampNotice}\n\n`)
       : `🎮 <b>Free Play Mode</b> (Bet optional: <code>/highlow &lt;amount&gt;</code>, ${limitWord})\n\n`;
 
     const prompt = `${eliteBanner}🎲 <b>High-Low Mystery Number</b>\n\n` +
@@ -108,33 +110,46 @@ export const highlow = {
       }
     }
 
-    let isWin = false;
-    let isJackpot = false;
+    const evaluateOutcome = (sec) => {
+      if (choice === 'higher' && sec > hint) return { isWin: true, isJackpot: false };
+      if (choice === 'lower' && sec < hint) return { isWin: true, isJackpot: false };
+      if (choice === 'jackpot' && sec === hint) return { isWin: true, isJackpot: true };
+      return { isWin: false, isJackpot: false };
+    };
 
     // House wins on secret === hint unless player explicitly picked 'jackpot'
-    if (choice === 'higher' && secret > hint) isWin = true;
-    else if (choice === 'lower' && secret < hint) isWin = true;
-    else if (choice === 'jackpot' && secret === hint) {
-      isWin = true;
-      isJackpot = true;
+    let { isWin, isJackpot } = evaluateOutcome(secret);
+
+    // VIP Luck Reroll: hidden 25% "Second Chance" luck reroll on secret number if Ultimate Gambler misses
+    if (!isWin && isUltimate && Math.random() < 0.25) {
+      secret = randomBetween(1, 100);
+      const rerollOutcome = evaluateOutcome(secret);
+      isWin = rerollOutcome.isWin;
+      isJackpot = rerollOutcome.isJackpot;
     }
 
     if (isWin) {
       let reward = 0;
       let winTitle = '';
+      const normalMult = isUltimate ? 2.0 : 1.4;
+      const jackpotMult = isUltimate ? 10 : 5;
 
       if (isJackpot) {
         if (bet > 0) {
-          reward = Math.floor(bet * 5);
-          winTitle = '🎯 <b>JACKPOT EXACT MATCH! 5X PAYOUT!</b> 🌟';
+          reward = Math.floor(bet * jackpotMult);
+          winTitle = isUltimate
+            ? '🎯 <b>JACKPOT EXACT MATCH! VIP 10X PAYOUT!</b> 🌟'
+            : '🎯 <b>JACKPOT EXACT MATCH! 5X PAYOUT!</b> 🌟';
         } else {
-          reward = 25000;
+          reward = isUltimate ? 50000 : 25000;
           winTitle = '🎯 <b>JACKPOT EXACT MATCH!</b> 🌟';
         }
       } else {
         if (bet > 0) {
-          reward = Math.floor(bet * 1.4);
-          winTitle = '🎉 <b>CORRECT GUESS! 1.4X PAYOUT!</b>';
+          reward = Math.floor(bet * normalMult);
+          winTitle = isUltimate
+            ? '🎉 <b>CORRECT GUESS! VIP 2X PAYOUT!</b>'
+            : '🎉 <b>CORRECT GUESS! 1.4X PAYOUT!</b>';
         } else {
           const base = randomBetween(800, 2000);
           reward = Math.floor(base * (1 + (luckInfo.totalBonus / 200)));
@@ -146,8 +161,8 @@ export const highlow = {
         walletDelta: reward,
         sourceCommand: '/highlow',
         details: isJackpot
-          ? `High-Low Exact Jackpot (${bet > 0 ? '5x' : '25k'})`
-          : `High-Low Win (${choice}${bet > 0 ? ' 1.4x' : ''})`
+          ? `High-Low Exact Jackpot (${bet > 0 ? `${jackpotMult}x` : `${reward}`})`
+          : `High-Low Win (${choice}${bet > 0 ? ` ${normalMult}x` : ''})`
       });
       const xpRes = await addXp(targetUserId, isJackpot ? 100 : 25);
 

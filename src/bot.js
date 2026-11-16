@@ -115,6 +115,8 @@ export function checkButtonOwnership(ctx) {
     data === 'gamble:warning' ||
     parts.includes('shared') ||
     parts.includes('public') ||
+    parts[0] === 'fight' ||
+    parts[0] === 'fpost' ||
     parts[0] === 'heist_join' ||
     parts[0] === 'coinbomb_claim' ||
     parts[0] === 'coinbomb' ||
@@ -382,7 +384,9 @@ function registerDefaultCommands() {
       return;
     }
 
-    const commandKey = parts[0] === 'coinbomb' || parts[0] === 'coinbomb_claim' ? 'use' : parts[0];
+    const commandKey = (parts[0] === 'coinbomb' || parts[0] === 'coinbomb_claim')
+      ? 'use'
+      : (parts[0] === 'fpost' ? 'fight' : parts[0]);
 
     // Check if there is a handler registered for this prefix
     const handler = callbackHandlers.get(commandKey);

@@ -1,5 +1,6 @@
 import { InlineKeyboard } from 'grammy';
 import userRepo from '../../database/userRepo.js';
+import fightRepo from '../../database/fightRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
 import cooldownRepo from '../../database/cooldownRepo.js';
 import { getJob } from '../../config/jobs.js';
@@ -33,7 +34,8 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
       ? 0
       : Math.max(1, Math.ceil((Number(user.ultimate_expires_at) - Date.now()) / 1000));
     const ultDurationText = isPermUltimate ? 'Permanent' : `Expires in ${formatTime(ultRemSecs)}`;
-    ultimateLine = `🎰 <b>Elite Status:</b> Ultimate Gambler (${ultDurationText})\n`;
+    ultimateLine = `🎰 <b>Elite Status:</b> Ultimate Gambler (${ultDurationText})\n` +
+      `🔥 <i>Perks: Unlimited Max Bets, VIP Casino Luck Boost &amp; Supercharged Multipliers (Up to 15x Scratch, 50x Slots, 3.5x BJ, 2x/10x High-Low)</i>\n`;
   }
 
   let premiumBadge = '';
@@ -51,6 +53,12 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
   }
 
   const isPassive = Number(user.passive_mode) === 1;
+  const fWins = Number(user.fight_wins || 0);
+  const fLosses = Number(user.fight_losses || 0);
+  const fTotal = fWins + fLosses;
+  const winRatio = fTotal > 0 ? Math.round((fWins / fTotal) * 100) : 0;
+  const fRankMeta = fightRepo.getRankMeta(user.fight_rank || 'Bronze');
+  const { favAction, leastFavAction } = fightRepo.getFavoriteAndLeastActions(user.fight_action_counts);
 
   const card = `📜 <b>Player Profile: ${sanitizeHtml(user.first_name)}</b>${ultimateTitleTag}\n` +
     (user.username ? `👤 <i>@${sanitizeHtml(user.username)}</i>\n` : '') +
@@ -66,6 +74,12 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
     `🛡️ <b>Passive Mode:</b> ${isPassive ? '🟢 <b>ENABLED</b> (Robbery Immune)' : '🔴 <b>DISABLED</b> (Vulnerable to /rob)'}\n\n` +
     `👛 <b>Wallet:</b> ${formatCoins(user.wallet)}\n` +
     `🏦 <b>Bank Vault:</b> ${formatCoins(user.bank)} / ${formatCoins(user.bank_max)}\n\n` +
+    `⚔️ <b>Fights</b>\n` +
+    `├ 📈 Win Ratio: <b>${winRatio}%</b> (${fWins}W / ${fLosses}L)\n` +
+    `├ 🎖️ Reputation: <b>${Number(user.fight_rep || 0)}</b>\n` +
+    `├ 🏆 Rank: ${fRankMeta.emoji} <b>${fRankMeta.name}</b> (Streak: 🔥 <b>${Number(user.fight_streak || 0)}</b>)\n` +
+    `├ ⭐ Favorite Action: <b>${sanitizeHtml(favAction)}</b>\n` +
+    `└ 💤 Least Favorite Action: <b>${sanitizeHtml(leastFavAction)}</b>\n\n` +
     `✨ <b>Active Boosts & Defenses:</b>\n${buffsText}\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━`;
 

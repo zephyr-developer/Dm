@@ -6,8 +6,9 @@ import { formatCoins, parseBet } from '../../utils/formatters.js';
 
 const MAX_GAMBLE_BET = 100_000_000;
 const MAX_STANDARD_MULTIPLIER = 5;
+const MAX_ULTIMATE_MULTIPLIER = 15;
 
-// Weighted casino probability table (Total = 100%, House Edge ~25.6%)
+// Standard weighted casino probability table (Total = 100%, House Edge ~25.6%)
 const SCRATCH_WEIGHTS = [
   { value: 0, weight: 45, label: '💨 0x' },
   { value: 0.25, weight: 25, label: '🪙 0.25x' },
@@ -18,16 +19,28 @@ const SCRATCH_WEIGHTS = [
   { value: 'SKULL', weight: 5.5, label: '💀 BUST' }
 ];
 
-function rollWeightedTile(isGodLuck = false) {
+// VIP Ultimate Gambler probability table (Total = 100%: 18% empty, 22% 0.5x, 25% 1x, 18% 2x, 10% 5x, 4% 10x, 3% bomb)
+const VIP_SCRATCH_WEIGHTS = [
+  { value: 0, weight: 18, label: '💨 0x' },
+  { value: 0.5, weight: 22, label: '💰 0.5x' },
+  { value: 1.0, weight: 25, label: '💵 1x' },
+  { value: 2.0, weight: 18, label: '💎 2x' },
+  { value: 5.0, weight: 10, label: '👑 5x' },
+  { value: 10.0, weight: 4, label: '🔥 10x' },
+  { value: 'SKULL', weight: 3, label: '💀 BUST' }
+];
+
+export function rollWeightedTile(isGodLuck = false, isUltimate = false) {
   if (isGodLuck) {
     // @tzhunyuan with custom_luck >= 100: bomb-free high-roller board
     const godPool = [1.0, 2.0, 5.0, 10.0];
     return godPool[Math.floor(Math.random() * godPool.length)];
   }
 
+  const table = isUltimate ? VIP_SCRATCH_WEIGHTS : SCRATCH_WEIGHTS;
   const roll = Math.random() * 100;
   let cumulative = 0;
-  for (const entry of SCRATCH_WEIGHTS) {
+  for (const entry of table) {
     cumulative += entry.weight;
     if (roll < cumulative) {
       return entry.value;
@@ -36,17 +49,17 @@ function rollWeightedTile(isGodLuck = false) {
   return 0;
 }
 
-function generateWeightedBoard(isGodLuck = false) {
+export function generateWeightedBoard(isGodLuck = false, isUltimate = false) {
   const board = [];
   for (let i = 0; i < 9; i++) {
-    board.push(rollWeightedTile(isGodLuck));
+    board.push(rollWeightedTile(isGodLuck, isUltimate));
   }
   return board;
 }
 
 function formatTileLabel(val) {
   if (val === 'SKULL') return '💀 BUST';
-  const match = SCRATCH_WEIGHTS.find(w => w.value === val);
+  const match = VIP_SCRATCH_WEIGHTS.find(w => w.value === val) || SCRATCH_WEIGHTS.find(w => w.value === val);
   if (match) return match.label;
   return `${val}x`;
 }
@@ -99,15 +112,19 @@ export const scratch = {
     }
 
     const betStr = (ctx.match || '').trim() || ctx.message.text.trim().split(/\s+/).slice(1)[0];
+    const maxCardMult = isUltimate ? MAX_ULTIMATE_MULTIPLIER : MAX_STANDARD_MULTIPLIER;
 
     if (!betStr) {
       const limitLabel = isUltimate ? '🎰 No Limit (Ultimate Gambler)' : 'Max Bet: 🪙 100,000,000';
+      const vipBanner = isUltimate
+        ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n🎰 <b>ULTIMATE GAMBLER VIP ODDS ACTIVE (Up to 15x Multiplier!)</b>\n`
+        : '';
       return ctx.reply(
-        (isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '') +
+        vipBanner +
         `🎫 <b>Scratchcard Lottery</b>\n` +
         `Usage: <code>/scratch &lt;bet|half|all&gt;</code> (${limitLabel})\n\n` +
         `Pick 3 mystery tiles on the 3x3 grid! Watch out for the 💀 Bomb — hitting it forfeits your card.\n` +
-        `Max payout multiplier: <b>5x</b>\n\n` +
+        `Max payout multiplier: <b>${maxCardMult}x</b>\n\n` +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         { parse_mode: 'HTML' }
       );
@@ -141,7 +158,7 @@ export const scratch = {
 
     const luckInfo = await getLuckBreakdown(userId);
     const isGodLuck = (user?.username || '').toLowerCase() === 'tzhunyuan' && luckInfo.customLuck >= 100;
-    const board = generateWeightedBoard(isGodLuck);
+    const board = generateWeightedBoard(isGodLuck, isUltimate);
 
     const session = {
       userId,
@@ -157,7 +174,9 @@ export const scratch = {
 
     const keyboard = buildScratchKeyboard(userId, board, []);
 
-    const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
+    const eliteBanner = isUltimate
+      ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n🎰 <b>ULTIMATE GAMBLER VIP ODDS ACTIVE (Up to 15x Multiplier!)</b>\n`
+      : '';
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
     const prompt = `${eliteBanner}🎫 <b>TeleMemer Lucky Scratchcard</b>\n` +
       `Ticket Cost: <b>${formatCoins(bet)}</b>${clampNotice}\n` +
@@ -194,7 +213,9 @@ export const scratch = {
     session.revealed.push(clickedIdx);
     const value = session.board[clickedIdx];
 
-    const eliteBanner = session.isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
+    const eliteBanner = session.isUltimate
+      ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n🎰 <b>ULTIMATE GAMBLER VIP ODDS ACTIVE (Up to 15x Multiplier!)</b>\n`
+      : '';
 
     // Hit 💀 Bomb: ends game immediately & forfeits remaining scratches/winnings
     if (value === 'SKULL') {
@@ -220,9 +241,10 @@ export const scratch = {
     // If 3 tiles scratched, finish game!
     if (session.revealed.length >= 3) {
       activeScratchCards.delete(targetUserId);
+      const maxCardMult = session.isUltimate ? MAX_ULTIMATE_MULTIPLIER : MAX_STANDARD_MULTIPLIER;
       const rawTotalMult = Number(session.multipliers.reduce((a, b) => a + b, 0).toFixed(2));
-      const wasMultCapped = !session.isGodLuck && rawTotalMult > MAX_STANDARD_MULTIPLIER;
-      const totalMult = wasMultCapped ? MAX_STANDARD_MULTIPLIER : rawTotalMult;
+      const wasMultCapped = !session.isGodLuck && rawTotalMult > maxCardMult;
+      const totalMult = wasMultCapped ? maxCardMult : rawTotalMult;
       const payout = Math.floor(session.bet * totalMult);
 
       if (payout > 0) {
@@ -239,7 +261,7 @@ export const scratch = {
       const finishedKeyboard = buildScratchKeyboard(targetUserId, session.board, session.revealed, true);
 
       const winTitle = totalMult >= 2 ? '🎉 <b>BIG SCRATCHCARD WIN!</b>' : '🎫 <b>SCRATCHCARD FINISHED!</b>';
-      const capTag = wasMultCapped ? ` <i>(Capped at ${MAX_STANDARD_MULTIPLIER}x max)</i>` : '';
+      const capTag = wasMultCapped ? ` <i>(Capped at ${maxCardMult}x max)</i>` : '';
       const netProfit = payout - session.bet;
       const netText = netProfit >= 0
         ? `📈 <b>Net Profit:</b> +${formatCoins(netProfit)}`

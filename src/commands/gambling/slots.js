@@ -5,7 +5,12 @@ import { getLuckBreakdown } from '../../utils/luckEngine.js';
 import { formatCoins, parseBet, pickRandom } from '../../utils/formatters.js';
 
 const MAX_GAMBLE_BET = 100_000_000;
-const STANDARD_SYMBOLS = ['🍒', '🍋', '🍇', '🔔'];
+const STANDARD_SYMBOLS = [
+  { sym: '🍒', baseMult: 3 },
+  { sym: '🍋', baseMult: 4 },
+  { sym: '🍇', baseMult: 4 },
+  { sym: '🔔', baseMult: 5 }
+];
 
 function buildWarningKeyboard() {
   return new InlineKeyboard().text('⚠️', 'gamble:warning');
@@ -22,7 +27,7 @@ function pickThreeDistinct() {
 export const slots = {
   name: 'slots',
   aliases: [],
-  description: 'Spin the reels on the TeleMemer slot machine for up to 25x Pepe Jackpot (Max Bet: 100M)',
+  description: 'Spin the reels on the TeleMemer slot machine for up to 25x (50x VIP) Pepe Jackpot (Max Bet: 100M)',
   cooldown: 10, // 5s for Premium
 
   async execute(ctx) {
@@ -34,15 +39,21 @@ export const slots = {
 
     if (!betStr) {
       const limitLabel = isUltimate ? '🎰 No Limit (Ultimate Gambler)' : 'Max Bet: 🪙 100,000,000';
+      const multList = isUltimate
+        ? `• 🐸 🐸 🐸 = <b>50x MEGA VIP JACKPOT!</b>\n` +
+          `• 💎 💎 💎 = <b>15x VIP Mega Win</b>\n` +
+          `• 3 Matching = <b>4.5x–7.5x VIP Win</b>\n` +
+          `• 2 Matching = <b>1.8x VIP Return</b>\n\n`
+        : `• 🐸 🐸 🐸 = <b>25x JACKPOT!</b>\n` +
+          `• 💎 💎 💎 = <b>10x Mega Win</b>\n` +
+          `• 3 Matching = <b>3x–5x Win</b>\n` +
+          `• 2 Matching = <b>1.2x Return</b>\n\n`;
       return ctx.reply(
         (isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '') +
         `🎰 <b>TeleMemer Casino Slots</b>\n` +
         `Usage: <code>/slots &lt;bet|half|all&gt;</code> (${limitLabel})\n\n` +
         `<b>Payout Multipliers:</b>\n` +
-        `• 🐸 🐸 🐸 = <b>25x JACKPOT!</b>\n` +
-        `• 💎 💎 💎 = <b>10x Mega Win</b>\n` +
-        `• 3 Matching = <b>4x Win</b>\n` +
-        `• 2 Matching = <b>1.2x Return</b>\n\n` +
+        multList +
         `👛 <b>Your Wallet:</b> ${formatCoins(user.wallet)}`,
         {
           parse_mode: 'HTML',
@@ -81,11 +92,17 @@ export const slots = {
     const isGodLuck = (user?.username || '').toLowerCase() === 'tzhunyuan' && luckInfo.customLuck >= 100;
 
     // Weighted slot outcomes:
-    // ~0.1% 🐸🐸🐸 (25x), ~0.5% 💎💎💎 (10x), ~7.4% 3x standard (4x), ~20% 2-match (1.2x), ~72% no match (0x)
+    // Standard: ~0.1% 🐸🐸🐸 (25x), ~0.5% 💎💎💎 (10x), ~7.4% 3x standard (3x-5x), ~20% 2-match (1.2x), ~72% no match (0x)
+    // Ultimate Gambler: +25% VIP luck boost to matching hits (53% match rate vs 28% standard) & 1.5x/50x Elite multipliers
     let roll = Math.random() * 100;
     if (isGodLuck) {
       roll = Math.random() * 12; // Owner god luck tilts heavily toward jackpots
     }
+
+    const triplePepeMax = isUltimate ? 0.5 : 0.1;
+    const tripleDiamondMax = isUltimate ? 3.0 : 0.6;
+    const tripleStdMax = isUltimate ? 18.0 : 8.0;
+    const doubleMatchMax = isUltimate ? 53.0 : 28.0;
 
     let s1;
     let s2;
@@ -93,27 +110,31 @@ export const slots = {
     let multiplier = 0;
     let title = '';
 
-    if (roll < 0.1) {
+    if (roll < triplePepeMax) {
       s1 = '🐸'; s2 = '🐸'; s3 = '🐸';
-      multiplier = 25;
-      title = '🐸 <b>PEPE JACKPOT! 25X MULTIPLIER!</b> 🌟';
-    } else if (roll < 0.6) {
+      multiplier = isUltimate ? 50 : 25;
+      title = isUltimate
+        ? '🐸 <b>PEPE JACKPOT! 50X MEGA VIP JACKPOT!</b> 🌟'
+        : '🐸 <b>PEPE JACKPOT! 25X MULTIPLIER!</b> 🌟';
+    } else if (roll < tripleDiamondMax) {
       s1 = '💎'; s2 = '💎'; s3 = '💎';
-      multiplier = 10;
-      title = '💎 <b>DIAMOND SHINE! 10X MEGA WIN!</b> 💎';
-    } else if (roll < 8.0) {
-      const sym = pickRandom(STANDARD_SYMBOLS);
-      s1 = sym; s2 = sym; s3 = sym;
-      multiplier = 4;
-      title = '🎉 <b>TRIPLE MATCH! 4X WIN!</b>';
-    } else if (roll < 28.0) {
+      multiplier = isUltimate ? 15 : 10;
+      title = isUltimate
+        ? '💎 <b>DIAMOND SHINE! 15X VIP MEGA WIN!</b> 💎'
+        : '💎 <b>DIAMOND SHINE! 10X MEGA WIN!</b> 💎';
+    } else if (roll < tripleStdMax) {
+      const picked = pickRandom(STANDARD_SYMBOLS);
+      s1 = picked.sym; s2 = picked.sym; s3 = picked.sym;
+      multiplier = isUltimate ? Number((picked.baseMult * 1.5).toFixed(2)) : picked.baseMult;
+      title = `🎉 <b>TRIPLE MATCH! ${multiplier}X WIN!</b>`;
+    } else if (roll < doubleMatchMax) {
       const [a, b] = pickThreeDistinct();
       const layout = Math.floor(Math.random() * 3);
       if (layout === 0) { s1 = a; s2 = a; s3 = b; }
       else if (layout === 1) { s1 = a; s2 = b; s3 = a; }
       else { s1 = b; s2 = a; s3 = a; }
-      multiplier = 1.2;
-      title = '✨ <b>DOUBLE MATCH! 1.2X PAYOUT!</b>';
+      multiplier = isUltimate ? 1.8 : 1.2;
+      title = `✨ <b>DOUBLE MATCH! ${multiplier}X PAYOUT!</b>`;
     } else {
       [s1, s2, s3] = pickThreeDistinct();
       multiplier = 0;
@@ -135,9 +156,10 @@ export const slots = {
     const updatedWallet = updatedUser?.wallet || 0;
     const luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
     const eliteBanner = isUltimate ? `🎰 <b>[ULTIMATE GAMBLER — NO LIMIT TABLE]</b>\n` : '';
+    const eliteBoostNotice = isUltimate ? `\n🔥 <b>Elite Multiplier Boost (+50% Payouts) Applied!</b>` : '';
     const clampNotice = wasClamped ? `\n⚠️ <i>(Table limit applied: 🪙 100,000,000 max bet)</i>` : '';
 
-    const display = `${eliteBanner}🎰 <b>SLOT REELS SPINNING...</b>${luckTag}${clampNotice}\n\n` +
+    const display = `${eliteBanner}🎰 <b>SLOT REELS SPINNING...</b>${luckTag}${eliteBoostNotice}${clampNotice}\n\n` +
       `╔═══════════════╗\n` +
       `║   <b>${s1}  |  ${s2}  |  ${s3}</b>   ║\n` +
       `╚═══════════════╝\n\n` +

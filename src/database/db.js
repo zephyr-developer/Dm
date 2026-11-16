@@ -24,7 +24,11 @@ const memoryDb = {
   settings: new Map(),
   shop_stock: new Map(), // key: item_id -> { item_id, current_stock, next_reset_at }
   currency_logs: [],
-  logAutoInc: 1
+  logAutoInc: 1,
+  fights: [],
+  fightAutoInc: 1,
+  fight_reputations: new Set(), // key: `${giverId}:${receiverId}`
+  fight_daily_pairs: new Map() // key: `${dayKey}:${pairKey}` -> count
 };
 
 if (isPostgresConfigured) {
@@ -123,6 +127,15 @@ export async function initDatabase() {
         ban_expires_at BIGINT DEFAULT NULL,
         can_reply_owner INTEGER DEFAULT 0,
         ultimate_expires_at BIGINT DEFAULT NULL,
+        fight_rep INTEGER DEFAULT 0,
+        fight_streak INTEGER DEFAULT 0,
+        fight_wins INTEGER DEFAULT 0,
+        fight_losses INTEGER DEFAULT 0,
+        fight_rank VARCHAR(20) DEFAULT 'Bronze',
+        fight_score INTEGER DEFAULT 0,
+        fight_bucket_id VARCHAR(32) DEFAULT 'default_bucket',
+        fight_unlocked_ranks TEXT DEFAULT 'Bronze',
+        fight_action_counts JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -199,11 +212,47 @@ export async function initDatabase() {
       );
     `);
 
+    // 9. Fight 2.0 Stateless Records Table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fights (
+        fight_id SERIAL PRIMARY KEY,
+        type VARCHAR(20) NOT NULL,
+        mode VARCHAR(30) NOT NULL,
+        wager_coins BIGINT DEFAULT 0,
+        left_team JSONB NOT NULL,
+        right_team JSONB NOT NULL,
+        winner_side VARCHAR(10),
+        rounds_log JSONB NOT NULL,
+        created_at BIGINT NOT NULL
+      );
+    `);
+
+    // 10. Fight Reputations Table (Enforces 1 rep per unique giver->receiver pair lifetime)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fight_reputations (
+        giver_id BIGINT NOT NULL,
+        receiver_id BIGINT NOT NULL,
+        PRIMARY KEY (giver_id, receiver_id)
+      );
+    `);
+
+    // 11. Fight Daily Pairs (Anti-Farming diminishing returns tracker)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fight_daily_pairs (
+        day_key VARCHAR(16) NOT NULL,
+        pair_key VARCHAR(64) NOT NULL,
+        fight_count INTEGER DEFAULT 0,
+        PRIMARY KEY (day_key, pair_key)
+      );
+    `);
+
     // Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_group_members_chat ON group_members(chat_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_networth ON users((wallet + bank) DESC);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_active_buffs_expiry ON active_buffs(expires_at);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_currency_logs_user_time ON currency_logs(user_id, created_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_fights_created_at ON fights(created_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_users_fight_score ON users(fight_score DESC, fight_rep DESC);`);
 
     // Auto-migration checks for backwards-compatibility
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until BIGINT DEFAULT 0;`);
@@ -219,6 +268,15 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_expires_at BIGINT DEFAULT NULL;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS can_reply_owner INTEGER DEFAULT 0;`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ultimate_expires_at BIGINT DEFAULT NULL;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_rep INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_streak INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_wins INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_losses INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_rank VARCHAR(20) DEFAULT 'Bronze';`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_score INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_bucket_id VARCHAR(32) DEFAULT 'default_bucket';`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_unlocked_ranks TEXT DEFAULT 'Bronze';`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_action_counts JSONB DEFAULT '{}'::jsonb;`);
 
     await client.query('COMMIT');
     console.log('✅ PostgreSQL schemas initialized and verified (Zero-Drop policy enforced).');
@@ -304,6 +362,15 @@ function executeMemoryQuery(text, params = []) {
         ban_expires_at: null,
         can_reply_owner: 0,
         ultimate_expires_at: null,
+        fight_rep: 0,
+        fight_streak: 0,
+        fight_wins: 0,
+        fight_losses: 0,
+        fight_rank: 'Bronze',
+        fight_score: 0,
+        fight_bucket_id: 'default_bucket',
+        fight_unlocked_ranks: 'Bronze',
+        fight_action_counts: {},
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -521,7 +588,73 @@ function executeMemoryQuery(text, params = []) {
         return { rows: [{ ...u }], rowCount: 1 };
       }
     }
+    if (norm.includes('SET FIGHT_REP = FIGHT_REP + 1')) {
+      const userId = Number(params[0]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.fight_rep = Number(u.fight_rep || 0) + 1;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET FIGHT_ACTION_COUNTS = $1')) {
+      const counts = typeof params[0] === 'string' ? JSON.parse(params[0]) : params[0];
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.fight_action_counts = counts;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
+    if (norm.includes('SET FIGHT_WINS = $1, FIGHT_LOSSES = $2, FIGHT_STREAK = $3, FIGHT_SCORE = $4, FIGHT_RANK = $5, FIGHT_BUCKET_ID = $6, FIGHT_UNLOCKED_RANKS = $7, FIGHT_ACTION_COUNTS = $8')) {
+      const u = memoryDb.users.get(Number(params[8]));
+      if (u) {
+        u.fight_wins = Number(params[0]);
+        u.fight_losses = Number(params[1]);
+        u.fight_streak = Number(params[2]);
+        u.fight_score = Number(params[3]);
+        u.fight_rank = String(params[4]);
+        u.fight_bucket_id = String(params[5]);
+        u.fight_unlocked_ranks = String(params[6]);
+        u.fight_action_counts = typeof params[7] === 'string' ? JSON.parse(params[7]) : params[7];
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
     return { rows: [], rowCount: 0 };
+  }
+
+  // 1b. Users Leaderboard & Fight Bucket queries (in-memory)
+  if (norm.includes('FROM USERS U') && norm.includes('ORDER BY')) {
+    let list = Array.from(memoryDb.users.values()).map(u => ({
+      ...u,
+      total_coins: Number(u.wallet || 0) + Number(u.bank || 0)
+    }));
+    const hasChatFilter = norm.includes('INNER JOIN GROUP_MEMBERS');
+    if (hasChatFilter) {
+      const chatId = Number(params[0]);
+      list = list.filter(u => memoryDb.group_members.has(`${chatId}:${u.user_id}`));
+    }
+    if (norm.includes('ORDER BY U.FIGHT_SCORE DESC')) {
+      list.sort((a, b) => (Number(b.fight_score || 0) - Number(a.fight_score || 0)) || (Number(b.fight_rep || 0) - Number(a.fight_rep || 0)) || (Number(b.fight_wins || 0) - Number(a.fight_wins || 0)));
+    } else if (norm.includes('ORDER BY (U.WALLET + U.BANK) DESC')) {
+      list.sort((a, b) => b.total_coins - a.total_coins);
+    } else if (norm.includes('ORDER BY U.LEVEL DESC')) {
+      list.sort((a, b) => (Number(b.level || 1) - Number(a.level || 1)) || (Number(b.xp || 0) - Number(a.xp || 0)));
+    }
+    const limitParam = hasChatFilter ? params[1] : params[0];
+    const limit = Number(limitParam || 10);
+    return { rows: list.slice(0, limit), rowCount: Math.min(list.length, limit) };
+  }
+
+  if (norm.includes('FROM USERS') && norm.includes('WHERE FIGHT_BUCKET_ID = $1')) {
+    const bucketId = String(params[0]);
+    const list = Array.from(memoryDb.users.values())
+      .filter(u => (u.fight_bucket_id || 'default_bucket') === bucketId || Number(u.fight_wins || 0) + Number(u.fight_losses || 0) > 0)
+      .sort((a, b) => (Number(b.fight_score || 0) - Number(a.fight_score || 0)) || (Number(b.fight_wins || 0) - Number(a.fight_wins || 0)))
+      .map(u => ({ ...u }));
+    return { rows: list, rowCount: list.length };
   }
 
   // 2. Currency Logs
@@ -743,6 +876,81 @@ function executeMemoryQuery(text, params = []) {
         return { rows: [{ ...existing }], rowCount: 1 };
       }
     }
+  }
+
+  // 8. Fights Table (Stateless Fight 2.0)
+  if (norm.startsWith('INSERT INTO FIGHTS')) {
+    const row = {
+      fight_id: memoryDb.fightAutoInc++,
+      type: String(params[0]),
+      mode: String(params[1]),
+      wager_coins: Number(params[2] || 0),
+      left_team: typeof params[3] === 'string' ? JSON.parse(params[3]) : params[3],
+      right_team: typeof params[4] === 'string' ? JSON.parse(params[4]) : params[4],
+      winner_side: params[5] ? String(params[5]) : null,
+      rounds_log: typeof params[6] === 'string' ? JSON.parse(params[6]) : params[6],
+      created_at: Number(params[7] || Date.now())
+    };
+    memoryDb.fights.push(row);
+    return { rows: [{ ...row }], rowCount: 1 };
+  }
+
+  if (norm.includes('FROM FIGHTS') && norm.includes('WHERE FIGHT_ID = $1')) {
+    const fid = Number(params[0]);
+    const found = memoryDb.fights.find(f => f.fight_id === fid);
+    return { rows: found ? [{ ...found }] : [], rowCount: found ? 1 : 0 };
+  }
+
+  if (norm.includes('FROM FIGHTS') && norm.includes('ORDER BY CREATED_AT DESC')) {
+    const targetUserId = Number(params[0]);
+    const matched = memoryDb.fights
+      .filter(f => {
+        const leftIds = (f.left_team || []).map(p => Number(p.userId));
+        const rightIds = (f.right_team || []).map(p => Number(p.userId));
+        return leftIds.includes(targetUserId) || rightIds.includes(targetUserId);
+      })
+      .sort((a, b) => Number(b.created_at) - Number(a.created_at));
+    return { rows: matched.map(m => ({ ...m })), rowCount: matched.length };
+  }
+
+  // 9. Fight Reputations Table
+  if (norm.startsWith('INSERT INTO FIGHT_REPUTATIONS')) {
+    const key = `${Number(params[0])}:${Number(params[1])}`;
+    if (memoryDb.fight_reputations.has(key)) {
+      return { rows: [], rowCount: 0 };
+    }
+    memoryDb.fight_reputations.add(key);
+    return { rows: [{ giver_id: Number(params[0]), receiver_id: Number(params[1]) }], rowCount: 1 };
+  }
+
+  if (norm.includes('FROM FIGHT_REPUTATIONS') && norm.includes('WHERE GIVER_ID = $1 AND RECEIVER_ID = $2')) {
+    const key = `${Number(params[0])}:${Number(params[1])}`;
+    return { rows: memoryDb.fight_reputations.has(key) ? [{ giver_id: Number(params[0]), receiver_id: Number(params[1]) }] : [], rowCount: memoryDb.fight_reputations.has(key) ? 1 : 0 };
+  }
+
+  // 10. Fight Daily Pairs Table
+  if (norm.includes('FROM FIGHT_DAILY_PAIRS')) {
+    const key = `${String(params[0])}:${String(params[1])}`;
+    const count = memoryDb.fight_daily_pairs.get(key) || 0;
+    return { rows: count > 0 ? [{ fight_count: count }] : [], rowCount: count > 0 ? 1 : 0 };
+  }
+
+  if (norm.startsWith('INSERT INTO FIGHT_DAILY_PAIRS')) {
+    const key = `${String(params[0])}:${String(params[1])}`;
+    const next = (memoryDb.fight_daily_pairs.get(key) || 0) + 1;
+    memoryDb.fight_daily_pairs.set(key, next);
+    return { rows: [{ fight_count: next }], rowCount: 1 };
+  }
+
+  // 11. Settings Table (Weekly rollover tracking)
+  if (norm.includes('FROM SETTINGS') && norm.includes('WHERE KEY = $1')) {
+    const val = memoryDb.settings.get(String(params[0]));
+    return { rows: val !== undefined ? [{ key: String(params[0]), value: val }] : [], rowCount: val !== undefined ? 1 : 0 };
+  }
+
+  if (norm.startsWith('INSERT INTO SETTINGS')) {
+    memoryDb.settings.set(String(params[0]), String(params[1]));
+    return { rows: [{ key: String(params[0]), value: String(params[1]) }], rowCount: 1 };
   }
 
   return { rows: [], rowCount: 0 };

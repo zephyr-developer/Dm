@@ -1,5 +1,6 @@
 import userRepo from '../database/userRepo.js';
 import inventoryRepo from '../database/inventoryRepo.js';
+import fightRepo from '../database/fightRepo.js';
 
 export const PRESTIGE_TITLES = {
   1: 'Novice Grinder',
@@ -80,6 +81,12 @@ export function getAvailableTitles(user, inventory = []) {
     addUnique(getPrestigeTitleForLevel(p));
   }
 
+  // Fight 2.0 Unlocked Rank Titles (persisted permanently in fight_unlocked_ranks)
+  const fightTitles = fightRepo.getUnlockedFightTitles(user);
+  for (const ft of fightTitles) {
+    addUnique(ft);
+  }
+
   // Custom Title from Own Title consumable
   const customTitle = user?.custom_title ? String(user.custom_title).trim() : null;
   if (customTitle) {
@@ -90,6 +97,7 @@ export function getAvailableTitles(user, inventory = []) {
     unlockedTitles: unlocked,
     hasMjNecklace,
     prestigeCount: prestige,
+    fightTitles,
     customTitle
   };
 }

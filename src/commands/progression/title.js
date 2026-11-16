@@ -36,6 +36,7 @@ export const title = {
         `🔓 <b>Unlocked Titles (${unlockedTitles.length}):</b>\n` +
         `${listLines}\n\n` +
         `✨ <b>How to Unlock More Titles:</b>\n` +
+        `• ⚔️ <b>Fight Ranks:</b> Climb ranked <code>/fight quick</code> tiers (Bronze → Amethyst) to unlock permanent Fighter Titles!\n` +
         `• 🏆 <b>Prestige:</b> Every Prestige tier (1, 2, 3, ...) unlocks a unique Prestige title!\n` +
         `• 📿 <b>Special Item:</b> Hold <code>mjnecklace</code> to unlock <b>"MJune's Fav"</b>!\n` +
         `• 🏷️ <b>Custom Title:</b> Buy &amp; use <code>owntitle</code> (<code>/use owntitle &lt;name&gt;</code>) to craft your own!\n\n` +
