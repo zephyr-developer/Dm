@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
+import { query } from '../../database/db.js';
 import userRepo from '../../database/userRepo.js';
 import inventoryRepo from '../../database/inventoryRepo.js';
-import { addLevels } from '../../utils/levelEngine.js';
 import { findItem, getItem } from '../../config/items.js';
 import { formatCoins, formatTime, randomBetween, sanitizeHtml } from '../../utils/formatters.js';
 import { createConfirmation, consumeConfirmation, deleteConfirmation, getConfirmation } from '../../utils/confirmations.js';
@@ -9,6 +9,10 @@ import { createConfirmation, consumeConfirmation, deleteConfirmation, getConfirm
 global.activeCoinBombs = global.activeCoinBombs || new Map();
 
 const CUSTOM_TITLE_COOLDOWN_MS = 86_400_000; // 24 hours
+const MAX_SAFE_QTY = 100_000_000_000; // 100 Billion max stack
+const MAX_SAFE_BANK_CAP = 9_000_000_000_000_000; // 9 Quadrillion max bank_max
+const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+const ONE_YEAR_SEC = 365 * 24 * 60 * 60;
 
 const USABLE_ITEM_IDS = new Set([
   'banknote',
@@ -21,6 +25,15 @@ const USABLE_ITEM_IDS = new Set([
   'gtkcondom',
   'owntitle'
 ]);
+
+function computeDurationBuff(quantity, baseDurationMs, existingRemainingSec) {
+  const safeBaseMs = Number(baseDurationMs || 86_400_000);
+  const bigAddedMs = BigInt(quantity) * BigInt(safeBaseMs);
+  const clampedAddedMs = bigAddedMs > BigInt(ONE_YEAR_MS) ? ONE_YEAR_MS : Number(bigAddedMs);
+  const addedSeconds = Math.floor(clampedAddedMs / 1000);
+  const baseRem = existingRemainingSec > 0 ? existingRemainingSec : 0;
+  return Math.min(baseRem + addedSeconds, ONE_YEAR_SEC);
+}
 
 export const use = {
   name: 'use',
@@ -154,17 +167,32 @@ export const use = {
 
     let quantity = 1;
     if (quantityStr === 'all' || quantityStr === 'max') {
-      quantity = owned;
+      quantity = Math.min(owned, MAX_SAFE_QTY);
     } else if (quantityStr) {
-      const parsed = parseInt(quantityStr, 10);
-      if (isNaN(parsed) || parsed <= 0) {
+      let bigQty;
+      try {
+        bigQty = BigInt(quantityStr);
+      } catch {
         return ctx.reply('❌ Please provide a valid positive quantity to use.', { parse_mode: 'HTML' });
       }
-      quantity = parsed;
+      if (bigQty <= 0n) {
+        return ctx.reply('❌ Please provide a valid positive quantity to use.', { parse_mode: 'HTML' });
+      }
+      if (bigQty > BigInt(owned)) {
+        return ctx.reply(`❌ You only have <b>${owned.toLocaleString('en-US')}x</b> ${item.emoji} <b>${item.name}</b>.`, { parse_mode: 'HTML' });
+      }
+      if (bigQty > BigInt(MAX_SAFE_QTY)) {
+        return ctx.reply(`❌ Maximum bulk usage per command is <b>${MAX_SAFE_QTY.toLocaleString('en-US')}x</b> items.`, { parse_mode: 'HTML' });
+      }
+      quantity = Number(bigQty);
+    }
+
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+      return ctx.reply('❌ Please provide a valid positive quantity to use.', { parse_mode: 'HTML' });
     }
 
     if (quantity > owned) {
-      return ctx.reply(`❌ You only have ${owned}x ${item.name}.`, { parse_mode: 'HTML' });
+      return ctx.reply(`❌ You only have <b>${owned.toLocaleString('en-US')}x</b> ${item.emoji} <b>${item.name}</b>.`, { parse_mode: 'HTML' });
     }
 
     if (item.id === 'coinbomb') {
@@ -179,7 +207,7 @@ export const use = {
       }
     }
 
-    // Send confirmation prompt (NO deduction yet) — Cancel left, Confirm right
+    // Confirmation prompt: [❌ Cancel] LEFT, [✅ Confirm] RIGHT
     const keyboard = new InlineKeyboard()
       .text('❌ Cancel', `use:no:${userId}`)
       .text('✅ Confirm', `use:yes:${item.id}:${quantity}:${userId}`);
@@ -223,7 +251,6 @@ export const use = {
         return ctx.answerCallbackQuery({ text: 'Too late! All coins were grabbed.', show_alert: true });
       }
 
-      // Register claimer synchronously before awaiting DB to eliminate concurrent race conditions
       state.claimedBy.add(clickerId);
       const reward = randomBetween(15000, 50000);
       state.rewards.push({
@@ -262,7 +289,6 @@ export const use = {
         return ctx.answerCallbackQuery({ text: `💰 You grabbed +${formatCoins(reward)}!`, show_alert: true });
       }
 
-      // Reached 3/3 claimers: remove button, show all 3 winners, and clean up global map
       global.activeCoinBombs.delete(msgId);
 
       const winnerLines = state.rewards
@@ -277,7 +303,7 @@ export const use = {
       return ctx.answerCallbackQuery({ text: `💰 Final grab! +${formatCoins(reward)}!`, show_alert: true });
     }
 
-    // 2. Confirmation callbacks (use:yes:<item_id>:<qty>:<uid> / use:no:<uid> / use:ot_yes:<token>:<uid> / use:ot_no:<token>:<uid>)
+    // 2. Confirmation callbacks
     const targetUserId = Number(parts[parts.length - 1]);
     if (ctx.from.id !== targetUserId) {
       return ctx.answerCallbackQuery({
@@ -303,12 +329,6 @@ export const use = {
 
       consumeConfirmation(token);
 
-      const owned = await inventoryRepo.getItem(targetUserId, 'owntitle');
-      if (owned < 1) {
-        await ctx.answerCallbackQuery({ text: 'You no longer own an Own Title item!', show_alert: true });
-        return ctx.editMessageText('❌ <b>Action Failed:</b> You no longer own <b>1x 🏷️ Own Title</b>.', { parse_mode: 'HTML' }).catch(() => {});
-      }
-
       const freshUser = await userRepo.getUser(targetUserId);
       const lastChange = Number(freshUser?.last_custom_title_at || 0);
       const elapsed = Date.now() - lastChange;
@@ -321,7 +341,12 @@ export const use = {
         ).catch(() => {});
       }
 
-      await inventoryRepo.removeItem(targetUserId, 'owntitle', 1);
+      const consumed = await inventoryRepo.consumeItemAtomic(targetUserId, 'owntitle', 1);
+      if (!consumed.success) {
+        await ctx.answerCallbackQuery({ text: 'You no longer own an Own Title item!', show_alert: true });
+        return ctx.editMessageText('❌ <b>Action Failed:</b> You no longer own <b>1x 🏷️ Own Title</b>.', { parse_mode: 'HTML' }).catch(() => {});
+      }
+
       await userRepo.setCustomTitle(targetUserId, pending.customTitleText, Date.now());
 
       await ctx.answerCallbackQuery({ text: '🏷️ Custom title unlocked!' });
@@ -338,37 +363,54 @@ export const use = {
 
     if (subAction === 'yes') {
       const itemId = parts[2];
-      const quantity = parseInt(parts[3], 10);
+      const quantity = Number(parts[3]);
       const item = getItem(itemId);
 
-      if (!item || !USABLE_ITEM_IDS.has(item.id) || isNaN(quantity) || quantity <= 0) {
+      if (
+        !item ||
+        !USABLE_ITEM_IDS.has(item.id) ||
+        !Number.isSafeInteger(quantity) ||
+        quantity <= 0 ||
+        quantity > MAX_SAFE_QTY
+      ) {
         await ctx.answerCallbackQuery({ text: 'Invalid item usage.', show_alert: true });
         return ctx.editMessageText('❌ Transaction failed: Invalid item or quantity.').catch(() => {});
       }
 
-      const owned = await inventoryRepo.getItem(targetUserId, item.id);
-      if (owned < quantity) {
-        await ctx.answerCallbackQuery({ text: `You only own ${owned}x ${item.name}!`, show_alert: true });
+      // Atomically consume quantity in ONE SQL query before applying item effect
+      const consumed = await inventoryRepo.consumeItemAtomic(targetUserId, item.id, quantity);
+      if (!consumed.success) {
+        const owned = await inventoryRepo.getItem(targetUserId, item.id);
+        await ctx.answerCallbackQuery({ text: `You only own ${owned.toLocaleString('en-US')}x ${item.name}!`, show_alert: true });
         return ctx.editMessageText(
-          `❌ <b>Action Failed:</b> You only have <b>${owned}x</b> ${item.emoji} <b>${item.name}</b> left.`,
+          `❌ <b>Action Failed:</b> You only have <b>${owned.toLocaleString('en-US')}x</b> ${item.emoji} <b>${item.name}</b> left.`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
 
-      // 1. BANK NOTE
+      // 1. BANK NOTE — O(1) instant calculation + 9 Quadrillion overflow guard
       if (item.id === 'banknote') {
-        let totalAdded = 0;
-        for (let i = 0; i < quantity; i++) {
-          totalAdded += randomBetween(15000, 30000);
+        let totalAdded;
+        if (quantity <= 100) {
+          totalAdded = Array.from({ length: quantity }, () => randomBetween(15000, 30000))
+            .reduce((sum, roll) => sum + roll, 0);
+        } else {
+          // Exact statistical expectation of Uniform(15000, 30000) is 22,500 per banknote with +/- 4% natural variance
+          const variance = 1 + ((Math.random() - 0.5) * 0.08);
+          totalAdded = Math.floor(quantity * 22500 * variance);
         }
 
-        await inventoryRepo.removeItem(targetUserId, 'banknote', quantity);
-        const updatedUser = await userRepo.increaseBankMax(targetUserId, totalAdded);
+        const beforeUser = await userRepo.getUser(targetUserId);
+        const oldBankMax = Number(beforeUser?.bank_max || 5000);
+        const targetIncrease = Math.max(0, Math.min(totalAdded, MAX_SAFE_BANK_CAP - oldBankMax));
+        const updatedUser = await userRepo.increaseBankMax(targetUserId, targetIncrease);
+        const finalBankMax = Math.min(Number(updatedUser?.bank_max || oldBankMax), MAX_SAFE_BANK_CAP);
+        const displayedAdded = Math.max(0, finalBankMax - oldBankMax);
 
-        await ctx.answerCallbackQuery({ text: `Expanded bank by 🪙 ${totalAdded.toLocaleString()}!` });
+        await ctx.answerCallbackQuery({ text: `Expanded bank by 🪙 ${displayedAdded.toLocaleString('en-US')}!` });
         return ctx.editMessageText(
-          `📜 You used <b>${quantity.toLocaleString('en-US')}x Bank Note</b> and expanded your bank capacity by <b>🪙 ${totalAdded.toLocaleString('en-US')}</b>!\n` +
-          `🏛️ <b>New Bank Limit:</b> ${formatCoins(updatedUser.bank_max)}`,
+          `📜 You used <b>${quantity.toLocaleString('en-US')}x Bank Note</b> and expanded your bank capacity by <b>🪙 ${displayedAdded.toLocaleString('en-US')}</b>!\n` +
+          `🏛️ <b>New Bank Limit:</b> ${formatCoins(finalBankMax)}`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
@@ -376,11 +418,10 @@ export const use = {
       // 2. COIN BOMB
       if (item.id === 'coinbomb') {
         if (ctx.chat?.type === 'private') {
+          await inventoryRepo.addItem(targetUserId, 'coinbomb', 1);
           await ctx.answerCallbackQuery({ text: 'Group chat only!', show_alert: true });
           return ctx.editMessageText('💣 Coin Bombs can only be detonated inside a group chat!').catch(() => {});
         }
-
-        await inventoryRepo.removeItem(targetUserId, 'coinbomb', 1);
 
         const ownerName = ctx.from.username ? `@${ctx.from.username}` : (ctx.from.first_name || 'Player');
         const keyboard = new InlineKeyboard()
@@ -390,7 +431,6 @@ export const use = {
           `<b>${sanitizeHtml(ownerName)}</b> tossed a live <b>Coin Bomb</b> into the chat!\n\n` +
           `First <b>3 players</b> to click below grab 🪙 15,000–50,000 each!`;
 
-        // Send a fresh group message (removing confirmation prompt) and key activeCoinBombs by sentMsg.message_id
         await ctx.deleteMessage().catch(() => {});
         const sentMsg = await ctx.reply(bombPrompt, {
           parse_mode: 'HTML',
@@ -407,29 +447,45 @@ export const use = {
         return ctx.answerCallbackQuery({ text: '💣 Coin Bomb Detonated!' });
       }
 
-      // 3. GTK BRAND CONDOM (+10 Levels per item)
+      // 3. GTK BRAND CONDOM — O(1) single-query level & bank_max surge
       if (item.id === 'gtkcondom') {
-        await inventoryRepo.removeItem(targetUserId, 'gtkcondom', quantity);
-        const levelsToGain = 10 * quantity;
-        const lvlRes = await addLevels(targetUserId, levelsToGain, '/use gtkcondom');
+        const beforeUser = await userRepo.getUser(targetUserId);
+        const oldLevel = Number(beforeUser?.level || 1);
+        const oldBankMax = Number(beforeUser?.bank_max || 5000);
 
-        await ctx.answerCallbackQuery({ text: `🎈 Gained +${levelsToGain} Levels!` });
+        const levelsGained = Math.min(100_000_000, quantity * 10);
+        const bankBonusBig = BigInt(quantity) * 50000n;
+        const bankBonus = bankBonusBig > BigInt(MAX_SAFE_BANK_CAP) ? MAX_SAFE_BANK_CAP : Number(bankBonusBig);
+
+        const updRes = await query(
+          `UPDATE users
+           SET level = LEAST(level::bigint + $1::bigint, 2000000000)::int,
+               bank_max = LEAST(bank_max + $2, 9000000000000000),
+               updated_at = NOW()
+           WHERE user_id = $3
+           RETURNING *;`,
+          [levelsGained, bankBonus, targetUserId]
+        );
+        const afterUser = updRes.rows[0] || {};
+        const newLevel = Number(afterUser.level ?? Math.min(2_000_000_000, oldLevel + levelsGained));
+        const actualLevelsGained = Math.max(0, newLevel - oldLevel);
+        const newBankMax = Number(afterUser.bank_max ?? Math.min(oldBankMax + bankBonus, MAX_SAFE_BANK_CAP));
+        const actualBankAdded = Math.max(0, newBankMax - oldBankMax);
+
+        await ctx.answerCallbackQuery({ text: `🎈 Gained +${actualLevelsGained.toLocaleString('en-US')} Levels!` });
         return ctx.editMessageText(
           `🎈 <b>ULTIMATE PROTECTION ACTIVATED!</b>\n` +
-          `You used <b>${quantity.toLocaleString('en-US')}x GTK Brand Condom</b> and instantly surged <b>+${levelsToGain} Levels</b>!\n\n` +
-          `⭐ <b>Level:</b> ${lvlRes.oldLevel} ➜ <b>${lvlRes.newLevel}</b>\n` +
-          `🪙 <b>Level-Up Bonus:</b> +${formatCoins(lvlRes.totalCoinsRewarded)}\n` +
-          `🏛️ <b>Bank Capacity Added:</b> +${lvlRes.totalBankCapacityAdded.toLocaleString('en-US')}`,
+          `You used <b>${quantity.toLocaleString('en-US')}x GTK Brand Condom</b> and instantly surged <b>+${actualLevelsGained.toLocaleString('en-US')} Levels</b>!\n\n` +
+          `⭐ <b>Level:</b> ${oldLevel.toLocaleString('en-US')} ➜ <b>${newLevel.toLocaleString('en-US')}</b>\n` +
+          `🏛️ <b>Bank Capacity Added:</b> +${actualBankAdded.toLocaleString('en-US')} (Total: ${formatCoins(newBankMax)})`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
 
-      // 4. VAULT LOCK
+      // 4. VAULT LOCK (O(1) clamped to 1 year)
       if (item.id === 'vaultlock') {
-        await inventoryRepo.removeItem(targetUserId, 'vaultlock', quantity);
-        const addedSeconds = 86400 * quantity;
         const existingRemaining = await inventoryRepo.getBuffRemaining(targetUserId, 'vaultlock');
-        const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+        const newRemaining = computeDurationBuff(quantity, 86_400_000, existingRemaining);
         await inventoryRepo.setBuff(targetUserId, 'vaultlock', newRemaining);
 
         await ctx.answerCallbackQuery({ text: '🏦 Vault Lock activated!' });
@@ -439,69 +495,61 @@ export const use = {
         ).catch(() => {});
       }
 
-      // 5. PADLOCK
+      // 5. PADLOCK (O(1) clamped to 1 year)
       if (item.id === 'padlock') {
-        await inventoryRepo.removeItem(targetUserId, 'padlock', quantity);
-        const addedSeconds = 86400 * quantity;
         const existingRemaining = await inventoryRepo.getBuffRemaining(targetUserId, 'padlock');
-        const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+        const newRemaining = computeDurationBuff(quantity, 86_400_000, existingRemaining);
         await inventoryRepo.setBuff(targetUserId, 'padlock', newRemaining);
 
         await ctx.answerCallbackQuery({ text: '🔒 Padlock armed!' });
         return ctx.editMessageText(
           `🔒 <b>Padlock Armed!</b>\n` +
-          `You snapped ${quantity > 1 ? `<b>${quantity}x</b> padlocks` : 'a heavy brass padlock'} onto your wallet!\n` +
+          `You snapped ${quantity > 1 ? `<b>${quantity.toLocaleString('en-US')}x</b> padlocks` : 'a heavy brass padlock'} onto your wallet!\n` +
           `Your coins are shielded from robbery attempts for the next <b>${formatTime(newRemaining)}</b> (or until breached).`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
 
-      // 6. LANDMINE
+      // 6. LANDMINE (O(1) clamped to 1 year)
       if (item.id === 'landmine') {
-        await inventoryRepo.removeItem(targetUserId, 'landmine', quantity);
-        const addedSeconds = 86400 * quantity;
         const existingRemaining = await inventoryRepo.getBuffRemaining(targetUserId, 'landmine');
-        const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+        const newRemaining = computeDurationBuff(quantity, 86_400_000, existingRemaining);
         await inventoryRepo.setBuff(targetUserId, 'landmine', newRemaining);
 
         await ctx.answerCallbackQuery({ text: '💣 Landmine primed!' });
         return ctx.editMessageText(
           `💣 <b>Landmine Primed!</b>\n` +
-          `You rigged ${quantity > 1 ? `<b>${quantity}x</b> explosive pressure plates` : 'an explosive pressure plate'} inside your pocket lining!\n` +
+          `You rigged ${quantity > 1 ? `<b>${quantity.toLocaleString('en-US')}x</b> explosive pressure plates` : 'an explosive pressure plate'} inside your pocket lining!\n` +
           `If someone attempts to <code>/rob</code> you in the next <b>${formatTime(newRemaining)}</b>, there is a <b>50% chance</b> it detonates and instantly kills them!`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
 
-      // 7. LUCKY HORSESHOE
+      // 7. LUCKY HORSESHOE (O(1) clamped to 1 year)
       if (item.id === 'horseshoe') {
-        await inventoryRepo.removeItem(targetUserId, 'horseshoe', quantity);
-        const addedSeconds = 1800 * quantity;
         const existingRemaining = await inventoryRepo.getBuffRemaining(targetUserId, 'horseshoe');
-        const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+        const newRemaining = computeDurationBuff(quantity, 1_800_000, existingRemaining);
         await inventoryRepo.setBuff(targetUserId, 'horseshoe', newRemaining);
 
         await ctx.answerCallbackQuery({ text: '🧲 Lucky Horseshoe activated!' });
         return ctx.editMessageText(
           `🧲 <b>Lucky Horseshoe Activated!</b>\n` +
-          `You activated <b>${quantity}x Lucky Horseshoe</b>!\n` +
+          `You activated <b>${quantity.toLocaleString('en-US')}x Lucky Horseshoe</b>!\n` +
           `Enjoy <b>+15% luck bonus</b> on <code>/beg</code>, <code>/search</code>, <code>/crime</code>, <code>/dig</code>, <code>/hunt</code>, and <code>/fish</code> for the next <b>${formatTime(newRemaining)}</b>!`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
 
-      // 8. APPLE
+      // 8. APPLE (O(1) clamped to 1 year)
       if (item.id === 'apple') {
-        await inventoryRepo.removeItem(targetUserId, 'apple', quantity);
-        const addedSeconds = 86400 * quantity;
         const existingRemaining = await inventoryRepo.getBuffRemaining(targetUserId, 'apple');
-        const newRemaining = (existingRemaining > 0 ? existingRemaining : 0) + addedSeconds;
+        const newRemaining = computeDurationBuff(quantity, 86_400_000, existingRemaining);
         await inventoryRepo.setBuff(targetUserId, 'apple', newRemaining);
 
         await ctx.answerCallbackQuery({ text: '🍎 Crisp Apple consumed!' });
         return ctx.editMessageText(
           `🍎 <b>Crisp Apple Consumed!</b>\n` +
-          `You consumed <b>${quantity}x Apple</b>!\n` +
+          `You consumed <b>${quantity.toLocaleString('en-US')}x Apple</b>!\n` +
           `For the next <b>${formatTime(newRemaining)}</b>, if you die during any grinding or crime activity, your <b>inventory items are 100% protected</b> from loss! (You will only risk coins).`,
           { parse_mode: 'HTML' }
         ).catch(() => {});

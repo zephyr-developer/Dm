@@ -1,7 +1,28 @@
-import { query } from './db.js';
+import { getClient, isPostgresConfigured, query } from './db.js';
+
+let inventorySchemaReady = null;
+
+export async function ensureInventorySchema(force = false) {
+  if (!isPostgresConfigured) return true;
+  if (inventorySchemaReady && !force) {
+    return inventorySchemaReady;
+  }
+  inventorySchemaReady = (async () => {
+    await query(`ALTER TABLE inventories ALTER COLUMN quantity TYPE BIGINT;`);
+    return true;
+  })().catch((err) => {
+    inventorySchemaReady = null;
+    console.error('[inventoryRepo] ensureInventorySchema error:', err.message);
+    throw err;
+  });
+  return inventorySchemaReady;
+}
 
 export const inventoryRepo = {
+  ensureInventorySchema,
+
   async getItem(userId, itemId) {
+    await ensureInventorySchema();
     const res = await query(
       'SELECT quantity FROM inventories WHERE user_id = $1 AND item_id = $2;',
       [userId, itemId]
@@ -15,6 +36,7 @@ export const inventoryRepo = {
   },
 
   async getUserInventory(userId) {
+    await ensureInventorySchema();
     const res = await query(
       'SELECT item_id, quantity FROM inventories WHERE user_id = $1 AND quantity > 0 ORDER BY quantity DESC;',
       [userId]
@@ -23,8 +45,9 @@ export const inventoryRepo = {
   },
 
   async addItem(userId, itemId, quantity = 1) {
-    const qty = Number(quantity);
-    if (qty <= 0) return false;
+    await ensureInventorySchema();
+    const qty = Math.floor(Number(quantity));
+    if (!Number.isSafeInteger(qty) || qty <= 0) return false;
 
     const sql = `
       INSERT INTO inventories (user_id, item_id, quantity)
@@ -35,25 +58,115 @@ export const inventoryRepo = {
     return true;
   },
 
-  async removeItem(userId, itemId, quantity = 1) {
-    const qty = Number(quantity);
-    if (qty <= 0) return false;
+  /**
+   * Atomically deducts `quantity` from `inventories` only if current quantity >= `quantity`.
+   * Cleans up row if remaining quantity reaches 0.
+   */
+  async consumeItemAtomic(userId, itemId, quantity = 1) {
+    await ensureInventorySchema();
+    const qty = Math.floor(Number(quantity));
+    if (!Number.isSafeInteger(qty) || qty <= 0) {
+      return { success: false, remaining: 0 };
+    }
 
-    const current = await this.getItem(userId, itemId);
-    if (current < qty) return false;
+    const res = await query(
+      `UPDATE inventories
+       SET quantity = quantity - $1
+       WHERE user_id = $2 AND item_id = $3 AND quantity >= $1
+       RETURNING quantity;`,
+      [qty, userId, itemId]
+    );
 
-    if (current === qty) {
-      await query('DELETE FROM inventories WHERE user_id = $1 AND item_id = $2;', [userId, itemId]);
-    } else {
+    if (!res.rows || res.rows.length === 0) {
+      return { success: false, remaining: 0 };
+    }
+
+    const remaining = Math.max(0, Number(res.rows[0].quantity));
+    if (remaining <= 0) {
       await query(
-        'UPDATE inventories SET quantity = quantity - $1 WHERE user_id = $2 AND item_id = $3;',
-        [qty, userId, itemId]
+        'DELETE FROM inventories WHERE user_id = $1 AND item_id = $2;',
+        [userId, itemId]
       );
     }
-    return true;
+
+    return { success: true, remaining };
+  },
+
+  async removeItem(userId, itemId, quantity = 1) {
+    const res = await this.consumeItemAtomic(userId, itemId, quantity);
+    return res.success;
+  },
+
+  /**
+   * Executes a 100% atomic purchase inside a single PostgreSQL transaction:
+   * Deducts wallet (WHERE wallet >= totalCost) -> Upserts inventory -> Inserts currency_log -> COMMIT.
+   * Guarantees coins can NEVER be deducted without item delivery.
+   */
+  async executeAtomicBuy(userId, itemId, quantity, totalCost, details = 'Shop Purchase') {
+    await ensureInventorySchema();
+    const qty = Math.floor(Number(quantity));
+    const cost = Math.floor(Number(totalCost));
+
+    if (!Number.isSafeInteger(qty) || qty <= 0 || !Number.isSafeInteger(cost) || cost < 0) {
+      return { success: false, reason: 'INVALID_PARAMETERS' };
+    }
+
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+
+      const walletRes = await client.query(
+        `UPDATE users
+         SET wallet = wallet - $1, updated_at = NOW()
+         WHERE user_id = $2 AND wallet >= $1
+         RETURNING wallet, bank;`,
+        [cost, userId]
+      );
+
+      if (!walletRes.rows || walletRes.rows.length === 0) {
+        await client.query('ROLLBACK').catch(() => {});
+        return { success: false, reason: 'INSUFFICIENT_FUNDS' };
+      }
+
+      const newWallet = Number(walletRes.rows[0].wallet);
+      const currentBank = Number(walletRes.rows[0].bank || 0);
+
+      const invRes = await client.query(
+        `INSERT INTO inventories (user_id, item_id, quantity)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, item_id) DO UPDATE
+         SET quantity = inventories.quantity + $3
+         RETURNING quantity;`,
+        [userId, itemId, qty]
+      );
+
+      const newQuantity = Number(invRes.rows[0]?.quantity || qty);
+
+      if (cost > 0) {
+        await client.query(
+          `INSERT INTO currency_logs (user_id, change_amount, location, wallet_after, bank_after, source_command, details)
+           VALUES ($1, $2, 'wallet', $3, $4, '/buy', $5);`,
+          [userId, -cost, newWallet, currentBank, details]
+        );
+      }
+
+      await client.query('COMMIT');
+      return {
+        success: true,
+        newWallet,
+        newQuantity
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error(`[inventoryRepo.executeAtomicBuy Error user:${userId} item:${itemId}]:`, err.message);
+      throw err;
+    } finally {
+      client.release();
+    }
   },
 
   async setItem(userId, itemId, exactQuantity) {
+    await ensureInventorySchema();
     const qty = Math.max(0, Math.floor(Number(exactQuantity)));
     if (isNaN(qty)) return false;
 
@@ -92,13 +205,10 @@ export const inventoryRepo = {
   async setBuff(userId, buffType, durationOrExpiresAt) {
     let expiresAt;
     if (durationOrExpiresAt > 1000000000000) {
-      // Millisecond timestamp (e.g. Date.now() + 24 * 60 * 60 * 1000)
       expiresAt = Math.floor(durationOrExpiresAt / 1000);
     } else if (durationOrExpiresAt > 1000000000) {
-      // Second timestamp
       expiresAt = Math.floor(durationOrExpiresAt);
     } else {
-      // Duration in seconds (e.g. 86400)
       expiresAt = Math.floor(Date.now() / 1000) + durationOrExpiresAt;
     }
 
@@ -151,7 +261,6 @@ export const inventoryRepo = {
 
   async getActiveBuffs(userId) {
     const now = Math.floor(Date.now() / 1000);
-    // Prune expired
     await query('DELETE FROM active_buffs WHERE expires_at <= $1;', [now]);
 
     const res = await query(

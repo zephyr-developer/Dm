@@ -76,10 +76,13 @@ export const fish = {
       return ctx.answerCallbackQuery({ text: 'Fish escaped!' });
     }
 
+    const frenzyMult = luckInfo.frenzyActive ? 2 : 1;
+    const frenzyTag = luckInfo.frenzyActive ? ' <i>(🔥 2x Server Frenzy!)</i>' : '';
+
     // Success! Check for 1% Kraken (amplified by luckEngine)
     if (await checkDropChance(targetUserId, 0.01)) {
       await inventoryRepo.addItem(targetUserId, 'kraken', 1);
-      const bonusCoins = Math.floor(randomBetween(8000, 20000) * (1 + (luckInfo.totalBonus / 200)));
+      const bonusCoins = Math.floor(randomBetween(8000, 20000) * (1 + (luckInfo.totalBonus / 200))) * frenzyMult;
       await userRepo.updateCoins(targetUserId, {
         walletDelta: bonusCoins,
         sourceCommand: '/fish',
@@ -90,11 +93,11 @@ export const fish = {
       const krakenItem = items.kraken;
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
-      const krakenMsg = `🦑 <b>ABYSSAL KRAKEN REELED IN!</b>${luckTag}\n` +
+      const krakenMsg = `🦑 <b>ABYSSAL KRAKEN REELED IN!</b>${luckTag}${frenzyTag}\n` +
         `The ocean roiled as giant tentacles breached the surface! You hauled the mythical sea terror into your vessel!\n\n` +
         `🏆 <b>Catch:</b> 1x ${krakenItem.emoji} <b>${krakenItem.name}</b> (Sell: 🪙 40,000)\n` +
         `🪙 <b>Ocean Bonus:</b> +${formatCoins(bonusCoins)}\n` +
-        `⭐ <b>XP Earned:</b> +100 XP` +
+        `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
         (xpRes.message ? `\n${xpRes.message}` : '');
 
       await ctx.editMessageText(krakenMsg, { parse_mode: 'HTML' });
@@ -107,7 +110,7 @@ export const fish = {
     await inventoryRepo.addItem(targetUserId, fishId, 1);
     const fishObj = items[fishId];
     const baseCoins = randomBetween(200, 800);
-    const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
+    const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200))) * frenzyMult;
     await userRepo.updateCoins(targetUserId, {
       walletDelta: coinsFound,
       sourceCommand: '/fish',
@@ -115,7 +118,7 @@ export const fish = {
     });
     const xpRes = await addXp(targetUserId, randomBetween(20, 35));
 
-    const catchMsg = `🎣 <b>NICE CATCH!</b>\n` +
+    const catchMsg = `🎣 <b>NICE CATCH!</b>${frenzyTag}\n` +
       `You reeled with perfect timing and landed 1x ${fishObj.emoji} <b>${fishObj.name}</b>!\n` +
       `🪙 Plus retrieved <b>${formatCoins(coinsFound)}</b> tangled in the seaweed.\n` +
       `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +

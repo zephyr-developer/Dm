@@ -287,6 +287,8 @@ function registerDefaultCommands() {
       `• /flow - Single-message grinding action bar!\n` +
       `• /daily, /weekly, /monthly - Claim periodic paychecks\n` +
       `• /shop - Browse weapons, tools, and defenses\n` +
+      `• /compress, /blackmarket - Forge 💠 Sovereign Shards &amp; buy VIP upgrades\n` +
+      `• /frenzy - Burn coins at the Altar for 2h 2x Server Frenzy!\n` +
       `• /work - Get a job and earn regular paychecks\n` +
       `• /bj, /slots, /scratch - Gamble your riches!\n` +
       `• /rob, /bankrob - High-stakes PvP theft\n\n`;

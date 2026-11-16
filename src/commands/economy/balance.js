@@ -25,6 +25,7 @@ async function buildBalanceCard(targetUser, viewerId, viewerIsOwner = false) {
   const wallet = Number(targetUser.wallet || 0);
   const bank = Number(targetUser.bank || 0);
   const bankMax = Number(targetUser.bank_max || 5000);
+  const shards = Math.max(0, Math.floor(Number(targetUser.sovereign_shards || 0)));
 
   const bankPercent = bankMax > 0 ? Math.floor((bank / bankMax) * 100) : 0;
   const bankBar = progressBar(bank, bankMax, 8);
@@ -43,6 +44,7 @@ async function buildBalanceCard(targetUser, viewerId, viewerIsOwner = false) {
     `👛 <b>Wallet:</b> ${formatCoins(wallet)}\n` +
     `🏦 <b>Bank:</b> ${formatCoins(bank)} / ${formatCoins(bankMax)} (<b>${bankPercent}%</b>)\n` +
     `📊 <b>Bank Space:</b> ${bankBar}\n` +
+    `💠 <b>Sovereign Shards:</b> <b>${shards.toLocaleString('en-US')} 💠</b>\n` +
     `💎 <b>Net Worth:</b> ${formatCoins(netWorth)}\n\n` +
     `⭐ <b>Level:</b> ${targetUser.level} (Prestige: ${targetUser.prestige})`;
 

@@ -93,6 +93,14 @@ export function getAvailableTitles(user, inventory = []) {
     addUnique(customTitle);
   }
 
+  // Endgame Special Unlocked Titles (Sovereign Overlord, Meme Patron, etc.)
+  const specialTitlesRaw = String(user?.unlocked_titles || '');
+  if (specialTitlesRaw) {
+    for (const part of specialTitlesRaw.split('|')) {
+      addUnique(part);
+    }
+  }
+
   return {
     unlockedTitles: unlocked,
     hasMjNecklace,

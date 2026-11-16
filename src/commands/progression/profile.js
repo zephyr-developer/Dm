@@ -53,12 +53,18 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
   }
 
   const isPassive = Number(user.passive_mode) === 1;
+  const shards = Math.max(0, Math.floor(Number(user.sovereign_shards || 0)));
   const fWins = Number(user.fight_wins || 0);
   const fLosses = Number(user.fight_losses || 0);
   const fTotal = fWins + fLosses;
   const winRatio = fTotal > 0 ? Math.round((fWins / fTotal) * 100) : 0;
   const fRankMeta = fightRepo.getRankMeta(user.fight_rank || 'Bronze');
   const { favAction, leastFavAction } = fightRepo.getFavoriteAndLeastActions(user.fight_action_counts);
+
+  const luckExtras = [];
+  if (luckBreakdown.permLuck > 0) luckExtras.push(`🍀 +${luckBreakdown.permLuck}% Charm`);
+  if (luckBreakdown.frenzyActive) luckExtras.push(`🔥 +15% Frenzy`);
+  const luckSuffix = luckExtras.length > 0 ? ` <i>(${luckExtras.join(', ')})</i>` : '';
 
   const card = `📜 <b>Player Profile: ${sanitizeHtml(user.first_name)}</b>${ultimateTitleTag}\n` +
     (user.username ? `👤 <i>@${sanitizeHtml(user.username)}</i>\n` : '') +
@@ -70,10 +76,11 @@ async function buildProfileCard(targetUserId, viewerId = targetUserId) {
     `📈 <b>XP Progress:</b> ${xpBar} (${xpProg.current}/${xpProg.max})\n\n` +
     `💼 <b>Occupation:</b> ${currentJob ? `${currentJob.emoji} ${currentJob.name} (${user.work_shifts} shifts)` : '<i>Unemployed</i>'}\n` +
     `🔥 <b>Daily Streak:</b> ${user.streak_daily} days\n` +
-    `🍀 <b>Total Luck:</b> +${luckBreakdown.totalBonus}%\n` +
+    `🍀 <b>Total Luck:</b> +${luckBreakdown.totalBonus}%${luckSuffix}\n` +
     `🛡️ <b>Passive Mode:</b> ${isPassive ? '🟢 <b>ENABLED</b> (Robbery Immune)' : '🔴 <b>DISABLED</b> (Vulnerable to /rob)'}\n\n` +
     `👛 <b>Wallet:</b> ${formatCoins(user.wallet)}\n` +
-    `🏦 <b>Bank Vault:</b> ${formatCoins(user.bank)} / ${formatCoins(user.bank_max)}\n\n` +
+    `🏦 <b>Bank Vault:</b> ${formatCoins(user.bank)} / ${formatCoins(user.bank_max)}\n` +
+    `💠 <b>Sovereign Shards:</b> <b>${shards.toLocaleString('en-US')} 💠</b>\n\n` +
     `⚔️ <b>Fights</b>\n` +
     `├ 📈 Win Ratio: <b>${winRatio}%</b> (${fWins}W / ${fLosses}L)\n` +
     `├ 🎖️ Reputation: <b>${Number(user.fight_rep || 0)}</b>\n` +

@@ -8,8 +8,14 @@ export function getXpThreshold(level) {
 
 const MAX_BALANCE = 1_000_000_000_000_000;
 
+/**
+ * @param {number} userId
+ * @param {number | null} [baseAmount]
+ */
 export async function addXp(userId, baseAmount = null) {
   const rawBase = baseAmount !== null ? baseAmount : randomBetween(15, 35);
+  const frenzyState = await userRepo.getFrenzyEvent().catch(() => ({ isActive: false }));
+  const frenzyActive = Boolean(frenzyState?.isActive);
   const client = await getClient();
 
   try {
@@ -19,11 +25,14 @@ export async function addXp(userId, baseAmount = null) {
 
     if (!user) {
       await client.query('COMMIT');
-      return { leveledUp: false, earnedXp: rawBase, newLevel: 1, message: '' };
+      return { leveledUp: false, earnedXp: rawBase, newLevel: 1, frenzyActive, message: '' };
     }
 
     const prestigeLevel = Number(user.prestige || 0);
-    const finalXp = Math.floor(rawBase * (1 + (prestigeLevel * 0.01)));
+    let finalXp = Math.floor(rawBase * (1 + (prestigeLevel * 0.01)));
+    if (frenzyActive) {
+      finalXp *= 2;
+    }
 
     let currentXp = Number(user.xp || 0) + finalXp;
     let currentLevel = Number(user.level || 1);

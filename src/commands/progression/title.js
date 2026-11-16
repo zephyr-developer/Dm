@@ -39,6 +39,8 @@ export const title = {
         `• ⚔️ <b>Fight Ranks:</b> Climb ranked <code>/fight quick</code> tiers (Bronze → Amethyst) to unlock permanent Fighter Titles!\n` +
         `• 🏆 <b>Prestige:</b> Every Prestige tier (1, 2, 3, ...) unlocks a unique Prestige title!\n` +
         `• 📿 <b>Special Item:</b> Hold <code>mjnecklace</code> to unlock <b>"MJune's Fav"</b>!\n` +
+        `• 🕶️ <b>Black Market:</b> Spend 15 💠 Shards in <code>/blackmarket</code> to unlock <b>「 Sovereign Overlord 」</b>!\n` +
+        `• 🔥 <b>Group Frenzy:</b> Become #1 Top Donor on a 5Q <code>/frenzy</code> cycle to unlock <b>「 Meme Patron 」</b>!\n` +
         `• 🏷️ <b>Custom Title:</b> Buy &amp; use <code>owntitle</code> (<code>/use owntitle &lt;name&gt;</code>) to craft your own!\n\n` +
         `💡 Type <code>/title &lt;title name&gt;</code> to equip any unlocked title!`,
         { parse_mode: 'HTML' }

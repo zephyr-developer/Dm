@@ -162,13 +162,23 @@ export const shop = {
         }
       }
 
-      // Deduct wallet and add item
-      await userRepo.updateCoins(targetUserId, {
-        walletDelta: -item.buyPrice,
-        sourceCommand: '/shop buy',
-        details: `Quick-bought 1x ${item.name} (${item.emoji})`
-      });
-      await inventoryRepo.addItem(targetUserId, item.id, 1);
+      // Deduct wallet and add item in a single atomic transaction
+      const buyRes = await inventoryRepo.executeAtomicBuy(
+        targetUserId,
+        item.id,
+        1,
+        item.buyPrice,
+        `Quick-bought 1x ${item.name} (${item.emoji})`
+      );
+      if (!buyRes.success) {
+        if (item.stockLimit) {
+          await shopStockRepo.returnStock(item.id, 1).catch(() => {});
+        }
+        return ctx.answerCallbackQuery({
+          text: `❌ Insufficient funds! You need ${formatCoins(item.buyPrice)}.`,
+          show_alert: true
+        });
+      }
 
       // Re-render shop page
       const { text, keyboard } = await buildShopPage(targetUserId, page);

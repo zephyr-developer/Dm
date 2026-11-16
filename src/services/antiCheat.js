@@ -20,7 +20,12 @@ const EXEMPT_COMMANDS = new Set([
   '/removepremium',
   '/incluck',
   '/restock',
-  '/voiditem'
+  '/voiditem',
+  '/compress',
+  '/decompress',
+  '/auto-compress',
+  '/blackmarket',
+  '/frenzy'
 ]);
 
 let botInstance = null;

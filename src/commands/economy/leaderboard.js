@@ -9,7 +9,10 @@ async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
 
   let rows = [];
   let title = '🪙 Richest Meme Lords';
-  if (type === 'level') {
+  if (type === 'shards') {
+    title = '💠 Top Sovereign Shard Holders';
+    rows = await userRepo.getLeaderboard(targetChatId, 'shards', 10);
+  } else if (type === 'level') {
     title = '⭐ Top Level Masters';
     rows = await userRepo.getLeaderboard(targetChatId, 'level', 10);
   } else if (type === 'fight') {
@@ -35,7 +38,10 @@ async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
       const name = sanitizeHtml(row.first_name || row.username || `Player ${row.user_id}`);
 
       let valStr = '';
-      if (type === 'fight') {
+      if (type === 'shards') {
+        const shards = Math.max(0, Math.floor(Number(row.sovereign_shards || 0)));
+        valStr = `<b>${shards.toLocaleString('en-US')} 💠 Sovereign Shards</b>`;
+      } else if (type === 'fight') {
         const fMeta = fightRepo.getRankMeta(row.fight_rank || 'Bronze');
         valStr = `${fMeta.emoji} ${fMeta.name} • <b>${Number(row.fight_score || 0)} pts</b> • 🎖️ ${Number(row.fight_rep || 0)} (${Number(row.fight_wins || 0)}W/${Number(row.fight_losses || 0)}L)`;
       } else if (type === 'level') {
@@ -58,6 +64,8 @@ async function buildLeaderboardMessage(chatId, scope, type, callerUserId) {
     )
     .row()
     .text(type === 'coins' ? '✅ 🪙 Coins' : '🪙 Coins', `leaderboard:type:${scope}:coins:${callerUserId}`)
+    .text(type === 'shards' ? '✅ 💠 Sovereign Shards' : '💠 Sovereign Shards', `leaderboard:type:${scope}:shards:${callerUserId}`)
+    .row()
     .text(type === 'level' ? '✅ ⭐ Levels' : '⭐ Levels', `leaderboard:type:${scope}:level:${callerUserId}`)
     .text(type === 'fight' ? '✅ 🎖️ Fight Rep & Ranks' : '🎖️ Fight Rep & Ranks', `leaderboard:type:${scope}:fight:${callerUserId}`);
 

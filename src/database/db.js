@@ -29,7 +29,8 @@ const memoryDb = {
   fightAutoInc: 1,
   fight_reputations: new Set(), // key: `${giverId}:${receiverId}`
   fight_daily_pairs: new Map(), // key: `${dayKey}:${pairKey}` -> count
-  active_fights: new Map() // key: session_id -> { session_id, state, updated_at }
+  active_fights: new Map(), // key: session_id -> { session_id, state, updated_at }
+  global_events: new Map() // key: event_key -> { event_key, current_amount, target_amount, frenzy_expires_at, top_donor_id, top_donor_amount }
 };
 
 if (isPostgresConfigured) {
@@ -137,6 +138,11 @@ export async function initDatabase() {
         fight_bucket_id VARCHAR(32) DEFAULT 'default_bucket',
         fight_unlocked_ranks TEXT DEFAULT 'Bronze',
         fight_action_counts JSONB DEFAULT '{}'::jsonb,
+        sovereign_shards BIGINT DEFAULT 0,
+        perm_luck_bonus INTEGER DEFAULT 0,
+        frenzy_donated BIGINT DEFAULT 0,
+        frenzy_cycle_donated BIGINT DEFAULT 0,
+        unlocked_titles TEXT DEFAULT '',
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -147,7 +153,7 @@ export async function initDatabase() {
       CREATE TABLE IF NOT EXISTS inventories (
         user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
         item_id VARCHAR(64) NOT NULL,
-        quantity INT DEFAULT 0,
+        quantity BIGINT DEFAULT 0,
         PRIMARY KEY (user_id, item_id)
       );
     `);
@@ -256,6 +262,18 @@ export async function initDatabase() {
       );
     `);
 
+    // 13. Global Events Table (e.g., Global Frenzy & Community Milestones)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS global_events (
+        event_key VARCHAR(64) PRIMARY KEY,
+        current_amount BIGINT DEFAULT 0,
+        target_amount BIGINT DEFAULT 5000000000000000,
+        frenzy_expires_at BIGINT DEFAULT 0,
+        top_donor_id BIGINT DEFAULT NULL,
+        top_donor_amount BIGINT DEFAULT 0
+      );
+    `);
+
     // Indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_group_members_chat ON group_members(chat_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_networth ON users((wallet + bank) DESC);`);
@@ -288,6 +306,12 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_bucket_id VARCHAR(32) DEFAULT 'default_bucket';`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_unlocked_ranks TEXT DEFAULT 'Bronze';`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fight_action_counts JSONB DEFAULT '{}'::jsonb;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS sovereign_shards BIGINT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS perm_luck_bonus INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS frenzy_donated BIGINT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS frenzy_cycle_donated BIGINT DEFAULT 0;`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS unlocked_titles TEXT DEFAULT '';`);
+    await client.query(`ALTER TABLE inventories ALTER COLUMN quantity TYPE BIGINT;`);
 
     await client.query('COMMIT');
     console.log('✅ PostgreSQL schemas initialized and verified (Zero-Drop policy enforced).');
@@ -389,6 +413,11 @@ function executeMemoryQuery(text, params = []) {
         fight_bucket_id: 'default_bucket',
         fight_unlocked_ranks: 'Bronze',
         fight_action_counts: {},
+        sovereign_shards: 0,
+        perm_luck_bonus: 0,
+        frenzy_donated: 0,
+        frenzy_cycle_donated: 0,
+        unlocked_titles: '',
         created_at: new Date(),
         updated_at: new Date()
       };
@@ -498,6 +527,20 @@ function executeMemoryQuery(text, params = []) {
         return { rows: [{ ...u }], rowCount: 1 };
       }
     }
+    if (norm.includes('SET WALLET = $1, BANK = $2, SOVEREIGN_SHARDS = $3')) {
+      const newWallet = Number(params[0]);
+      const newBank = Number(params[1]);
+      const newShards = Number(params[2]);
+      const userId = Number(params[3]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.wallet = newWallet;
+        u.bank = newBank;
+        u.sovereign_shards = newShards;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+    }
     if (norm.includes('SET WALLET = $1, BANK = $2')) {
       const newWallet = Number(params[0]);
       const newBank = Number(params[1]);
@@ -510,12 +553,41 @@ function executeMemoryQuery(text, params = []) {
         return { rows: [{ ...u }], rowCount: 1 };
       }
     }
-    if (norm.includes('BANK_MAX = BANK_MAX + $1')) {
+    if (
+      norm.includes('SET WALLET = WALLET - $1') &&
+      norm.includes('WHERE USER_ID = $2 AND WALLET >= $1') &&
+      !norm.includes('FRENZY_DONATED') &&
+      !norm.includes('SOVEREIGN_SHARDS')
+    ) {
+      const cost = Number(params[0]);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u && Number(u.wallet || 0) >= cost) {
+        u.wallet = Number(u.wallet) - cost;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('BANK_MAX = LEAST(BANK_MAX + $2, 9000000000000000)') && norm.includes('LEVEL =')) {
+      const lvlAdd = Number(params[0]);
+      const bankAdd = Number(params[1]);
+      const userId = Number(params[2]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.level = Math.min(2_000_000_000, Number(u.level || 1) + lvlAdd);
+        u.bank_max = Math.min(9_000_000_000_000_000, Number(u.bank_max || 5000) + bankAdd);
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('BANK_MAX = BANK_MAX + $1') || norm.includes('BANK_MAX = LEAST(BANK_MAX + $1')) {
       const inc = Number(params[0]);
       const userId = Number(params[1]);
       const u = memoryDb.users.get(userId);
       if (u) {
-        u.bank_max = (u.bank_max || 5000) + inc;
+        u.bank_max = Math.min(9_000_000_000_000_000, (u.bank_max || 5000) + inc);
         return { rows: [{ ...u }], rowCount: 1 };
       }
     }
@@ -625,6 +697,96 @@ function executeMemoryQuery(text, params = []) {
         return { rows: [{ ...u }], rowCount: 1 };
       }
     }
+    if (norm.includes('SET WALLET = WALLET - $1, SOVEREIGN_SHARDS = COALESCE(SOVEREIGN_SHARDS, 0) + $2')) {
+      const coinsCost = Number(params[0]);
+      const shardsAdd = Number(params[1]);
+      const userId = Number(params[2]);
+      const u = memoryDb.users.get(userId);
+      if (u && Number(u.wallet || 0) >= coinsCost) {
+        u.wallet = Number(u.wallet || 0) - coinsCost;
+        u.sovereign_shards = Number(u.sovereign_shards || 0) + shardsAdd;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('SET WALLET = WALLET + $1, SOVEREIGN_SHARDS = SOVEREIGN_SHARDS - $2')) {
+      const coinsAdd = Number(params[0]);
+      const shardsSub = Number(params[1]);
+      const userId = Number(params[2]);
+      const u = memoryDb.users.get(userId);
+      if (u && Number(u.sovereign_shards || 0) >= shardsSub) {
+        u.wallet = Number(u.wallet || 0) + coinsAdd;
+        u.sovereign_shards = Number(u.sovereign_shards || 0) - shardsSub;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('SET SOVEREIGN_SHARDS = COALESCE(SOVEREIGN_SHARDS, 0) + $1')) {
+      const shardsAdd = Number(params[0]);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.sovereign_shards = Number(u.sovereign_shards || 0) + shardsAdd;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('SET SOVEREIGN_SHARDS = SOVEREIGN_SHARDS - $1') && norm.includes('SOVEREIGN_SHARDS, 0) >= $1')) {
+      const shardsCost = Number(params[0]);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u && Number(u.sovereign_shards || 0) >= shardsCost) {
+        u.sovereign_shards = Number(u.sovereign_shards || 0) - shardsCost;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('SET PERM_LUCK_BONUS = LEAST($2, COALESCE(PERM_LUCK_BONUS, 0) + $1)')) {
+      const add = Number(params[0]);
+      const cap = Number(params[1]);
+      const userId = Number(params[2]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.perm_luck_bonus = Math.min(cap, Number(u.perm_luck_bonus || 0) + add);
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('SET UNLOCKED_TITLES = $1')) {
+      const titles = String(params[0] || '');
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u) {
+        u.unlocked_titles = titles;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.includes('SET WALLET = WALLET - $1, FRENZY_DONATED = COALESCE(FRENZY_DONATED, 0) + $1, FRENZY_CYCLE_DONATED = COALESCE(FRENZY_CYCLE_DONATED, 0) + $1')) {
+      const amt = Number(params[0]);
+      const userId = Number(params[1]);
+      const u = memoryDb.users.get(userId);
+      if (u && Number(u.wallet || 0) >= amt) {
+        u.wallet = Number(u.wallet || 0) - amt;
+        u.frenzy_donated = Number(u.frenzy_donated || 0) + amt;
+        u.frenzy_cycle_donated = Number(u.frenzy_cycle_donated || 0) + amt;
+        u.updated_at = new Date();
+        return { rows: [{ ...u }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (norm.startsWith('UPDATE USERS SET FRENZY_CYCLE_DONATED = 0')) {
+      for (const u of memoryDb.users.values()) {
+        u.frenzy_cycle_donated = 0;
+      }
+      return { rows: [], rowCount: memoryDb.users.size };
+    }
     if (norm.includes('SET FIGHT_WINS = $1, FIGHT_LOSSES = $2, FIGHT_STREAK = $3, FIGHT_SCORE = $4, FIGHT_RANK = $5, FIGHT_BUCKET_ID = $6, FIGHT_UNLOCKED_RANKS = $7, FIGHT_ACTION_COUNTS = $8')) {
       const u = memoryDb.users.get(Number(params[8]));
       if (u) {
@@ -656,6 +818,8 @@ function executeMemoryQuery(text, params = []) {
     }
     if (norm.includes('ORDER BY U.FIGHT_SCORE DESC')) {
       list.sort((a, b) => (Number(b.fight_score || 0) - Number(a.fight_score || 0)) || (Number(b.fight_rep || 0) - Number(a.fight_rep || 0)) || (Number(b.fight_wins || 0) - Number(a.fight_wins || 0)));
+    } else if (norm.includes('SOVEREIGN_SHARDS') && norm.includes('ORDER BY COALESCE(U.SOVEREIGN_SHARDS, 0) DESC')) {
+      list.sort((a, b) => (Number(b.sovereign_shards || 0) - Number(a.sovereign_shards || 0)) || (b.total_coins - a.total_coins));
     } else if (norm.includes('ORDER BY (U.WALLET + U.BANK) DESC')) {
       list.sort((a, b) => b.total_coins - a.total_coins);
     } else if (norm.includes('ORDER BY U.LEVEL DESC')) {
@@ -789,7 +953,7 @@ function executeMemoryQuery(text, params = []) {
     const itemId = String(params[2]);
     const key = `${userId}:${itemId}`;
     const current = memoryDb.inventories.get(key);
-    if (current) {
+    if (current && (!norm.includes('QUANTITY >= $1') || current.quantity >= qty)) {
       current.quantity = Math.max(0, current.quantity - qty);
       if (current.quantity <= 0) {
         memoryDb.inventories.delete(key);
@@ -876,7 +1040,17 @@ function executeMemoryQuery(text, params = []) {
     const currentStock = Number(params[1]);
     const nextResetAt = Number(params[2]);
     const existing = memoryDb.shop_stock.get(itemId);
-    if (!existing || norm.includes('DO UPDATE')) {
+    if (!existing) {
+      const row = { item_id: itemId, current_stock: currentStock, next_reset_at: nextResetAt };
+      memoryDb.shop_stock.set(itemId, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (norm.includes('SHOP_STOCK.CURRENT_STOCK + $2')) {
+      existing.current_stock = Number(existing.current_stock || 0) + currentStock;
+      memoryDb.shop_stock.set(itemId, existing);
+      return { rows: [{ ...existing }], rowCount: 1 };
+    }
+    if (norm.includes('DO UPDATE')) {
       const row = { item_id: itemId, current_stock: currentStock, next_reset_at: nextResetAt };
       memoryDb.shop_stock.set(itemId, row);
       return { rows: [{ ...row }], rowCount: 1 };
@@ -1004,6 +1178,59 @@ function executeMemoryQuery(text, params = []) {
   if (norm.startsWith('INSERT INTO SETTINGS')) {
     memoryDb.settings.set(String(params[0]), String(params[1]));
     return { rows: [{ key: String(params[0]), value: String(params[1]) }], rowCount: 1 };
+  }
+
+  // 12. Global Events Table
+  if (norm.includes('FROM GLOBAL_EVENTS') && norm.includes('WHERE EVENT_KEY = $1')) {
+    const row = memoryDb.global_events.get(String(params[0]));
+    return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+  }
+
+  if (norm.startsWith('INSERT INTO GLOBAL_EVENTS')) {
+    const eventKey = String(params[0]);
+    const existing = memoryDb.global_events.get(eventKey);
+    const row = existing || {
+      event_key: eventKey,
+      current_amount: Number(params[1] || 0),
+      target_amount: Number(params[2] || 5_000_000_000_000_000),
+      frenzy_expires_at: Number(params[3] || 0),
+      top_donor_id: params[4] !== undefined && params[4] !== null ? Number(params[4]) : null,
+      top_donor_amount: Number(params[5] || 0)
+    };
+    memoryDb.global_events.set(eventKey, row);
+    return { rows: [{ ...row }], rowCount: 1 };
+  }
+
+  if (norm.startsWith('UPDATE GLOBAL_EVENTS')) {
+    const eventKey = String(params[params.length - 1]);
+    const row = memoryDb.global_events.get(eventKey) || {
+      event_key: eventKey,
+      current_amount: 0,
+      target_amount: 5_000_000_000_000_000,
+      frenzy_expires_at: 0,
+      top_donor_id: null,
+      top_donor_amount: 0
+    };
+    if (norm.includes('SET FRENZY_EXPIRES_AT = $1 WHERE EVENT_KEY = $2')) {
+      row.frenzy_expires_at = Number(params[0] || 0);
+      memoryDb.global_events.set(eventKey, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (norm.includes('SET CURRENT_AMOUNT = $1, FRENZY_EXPIRES_AT = $2, TOP_DONOR_ID = $3, TOP_DONOR_AMOUNT = $4')) {
+      row.current_amount = Number(params[0] || 0);
+      row.frenzy_expires_at = Number(params[1] || 0);
+      row.top_donor_id = params[2] !== undefined && params[2] !== null ? Number(params[2]) : null;
+      row.top_donor_amount = Number(params[3] || 0);
+      memoryDb.global_events.set(eventKey, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (norm.includes('SET CURRENT_AMOUNT = $1, TOP_DONOR_ID = $2, TOP_DONOR_AMOUNT = $3')) {
+      row.current_amount = Number(params[0] || 0);
+      row.top_donor_id = params[1] !== undefined && params[1] !== null ? Number(params[1]) : null;
+      row.top_donor_amount = Number(params[2] || 0);
+      memoryDb.global_events.set(eventKey, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
   }
 
   return { rows: [], rowCount: 0 };

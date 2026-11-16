@@ -51,12 +51,15 @@ export const dig = {
       );
     }
 
+    const frenzyMult = luckInfo.frenzyActive ? 2 : 1;
+    const frenzyTag = luckInfo.frenzyActive ? ' <i>(🔥 2x Server Frenzy!)</i>' : '';
+
     // Outcome 2: Rare Loot (Roll > 70)
     if (roll > 70) {
       const rareItemId = pickRandom(['banknote', 'coinbomb']);
       const rareItem = items[rareItemId];
       const baseCoins = randomBetween(1500, 3500);
-      const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
+      const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200))) * frenzyMult;
 
       await inventoryRepo.addItem(userId, rareItemId, 1);
       await userRepo.updateCoins(userId, {
@@ -69,7 +72,7 @@ export const dig = {
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
       return ctx.reply(
-        `🌟 <b>RARE UNVEILING!</b>${luckTag}\n` +
+        `🌟 <b>RARE UNVEILING!</b>${luckTag}${frenzyTag}\n` +
         `Your shovel struck something solid buried deep in the ground!\n\n` +
         `🎁 <b>Item Unearthed:</b> 1x ${rareItem.emoji} <b>${rareItem.name}</b>\n` +
         `🪙 <b>Coins Found:</b> +${formatCoins(coinsFound)}\n` +
@@ -84,7 +87,7 @@ export const dig = {
     const commonItemId = pickRandom(['worm', 'ant', 'garbage']);
     const commonItem = items[commonItemId];
     const baseCoins = randomBetween(500, 1500);
-    const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
+    const coinsFound = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200))) * frenzyMult;
 
     await inventoryRepo.addItem(userId, commonItemId, 1);
     await userRepo.updateCoins(userId, {
@@ -95,7 +98,7 @@ export const dig = {
     const xpRes = await addXp(userId, randomBetween(20, 30));
 
     return ctx.reply(
-      `🪣 You dug into the dirt and unearthed 1x ${commonItem.emoji} <b>${commonItem.name}</b> and <b>${formatCoins(coinsFound)}</b>!\n` +
+      `🪣 You dug into the dirt and unearthed 1x ${commonItem.emoji} <b>${commonItem.name}</b> and <b>${formatCoins(coinsFound)}</b>!${frenzyTag}\n` +
       `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
       breakNotice +
       (xpRes.message ? `\n${xpRes.message}` : ''),

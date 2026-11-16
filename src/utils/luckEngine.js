@@ -5,19 +5,26 @@ import { randomBetween } from './formatters.js';
 export async function getLuckBreakdown(userId) {
   const user = await userRepo.getUser(userId);
   const customLuck = user ? Number(user.custom_luck || 0) : 0;
+  const permLuck = user ? Math.min(25, Math.max(0, Number(user.perm_luck_bonus || 0))) : 0;
   const hasHorseshoe = await inventoryRepo.hasBuff(userId, 'horseshoe');
   const isPremium = user ? Number(user.premium_until || 0) > Date.now() : false;
+  const frenzy = await userRepo.getFrenzyEvent().catch(() => ({ isActive: false }));
+  const frenzyActive = Boolean(frenzy?.isActive);
 
   const horseshoeBonus = hasHorseshoe ? 15 : 0;
   const premiumBonus = isPremium ? 10 : 0;
-  const totalBonus = customLuck + horseshoeBonus + premiumBonus;
+  const frenzyBonus = frenzyActive ? 15 : 0;
+  const totalBonus = customLuck + permLuck + horseshoeBonus + premiumBonus + frenzyBonus;
 
   return {
     customLuck,
+    permLuck,
     hasHorseshoe,
     horseshoeBonus,
     isPremium,
     premiumBonus,
+    frenzyActive,
+    frenzyBonus,
     totalBonus
   };
 }

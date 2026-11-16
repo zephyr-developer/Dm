@@ -37,10 +37,13 @@ export const hunt = {
       ? `\n\n💥 <b>MISFIRE!</b> Your 🔫 <b>Hunting Rifle backfired and broke!</b> Buy a new one with <code>/buy rifle</code>.`
       : '';
 
+    const frenzyMult = luckInfo.frenzyActive ? 2 : 1;
+    const frenzyTag = luckInfo.frenzyActive ? ' <i>(🔥 2x Server Frenzy!)</i>' : '';
+
     // Check for rare Dragon: 1% base chance boosted by luckEngine
     if (await checkDropChance(userId, 0.01)) {
       await inventoryRepo.addItem(userId, 'dragon', 1);
-      const bonusCoins = Math.floor(randomBetween(5000, 15000) * (1 + (luckInfo.totalBonus / 200)));
+      const bonusCoins = Math.floor(randomBetween(5000, 15000) * (1 + (luckInfo.totalBonus / 200))) * frenzyMult;
       await userRepo.updateCoins(userId, {
         walletDelta: bonusCoins,
         sourceCommand: '/hunt',
@@ -52,11 +55,11 @@ export const hunt = {
       let luckTag = luckInfo.customLuck > 0 ? ` <i>(🎲 +${luckInfo.customLuck}% luck active!)</i>` : '';
 
       return ctx.reply(
-        `🐉 <b>LEGENDARY ENCOUNTER!</b>${luckTag}\n` +
+        `🐉 <b>LEGENDARY ENCOUNTER!</b>${luckTag}${frenzyTag}\n` +
         `You sighted a blazing beast soaring above the mountain ridge and took the shot of a lifetime!\n\n` +
         `🏆 <b>Brought Down:</b> 1x ${dragonItem.emoji} <b>${dragonItem.name}</b> (Value: 🪙 35,000)\n` +
         `🪙 <b>Bounty Claimed:</b> +${formatCoins(bonusCoins)}\n` +
-        `⭐ <b>XP Earned:</b> +100 XP` +
+        `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
         breakNotice +
         (xpRes.message ? `\n${xpRes.message}` : ''),
         { parse_mode: 'HTML' }
@@ -82,7 +85,7 @@ export const hunt = {
       await inventoryRepo.addItem(userId, 'boar', 1);
       await inventoryRepo.addItem(userId, 'deer', 1);
       const baseCoins = randomBetween(1000, 3000);
-      const foundCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200)));
+      const foundCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 200))) * frenzyMult;
       await userRepo.updateCoins(userId, {
         walletDelta: foundCoins,
         sourceCommand: '/hunt',
@@ -91,7 +94,7 @@ export const hunt = {
       const xpRes = await addXp(userId, randomBetween(35, 50));
 
       return ctx.reply(
-        `🎯 <b>DOUBLE KILL!</b>\n` +
+        `🎯 <b>DOUBLE KILL!</b>${frenzyTag}\n` +
         `You took down both a 🐗 <b>Wild Boar</b> and a 🦌 <b>Majestic Deer</b>, plus recovered <b>${formatCoins(foundCoins)}</b> from an abandoned hunter stash!\n` +
         `⭐ <b>XP Earned:</b> +${xpRes.earnedXp} XP` +
         breakNotice +

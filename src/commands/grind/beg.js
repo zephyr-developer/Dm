@@ -73,19 +73,25 @@ export const beg = {
     if (luckInfo.totalBonus > 0) {
       earnedCoins = Math.floor(earnedCoins * (1 + (luckInfo.totalBonus / 200)));
     }
+    if (luckInfo.frenzyActive) {
+      earnedCoins *= 2;
+    }
 
     await userRepo.updateCoins(userId, {
       walletDelta: earnedCoins,
       sourceCommand: '/beg',
-      details: `Pity handout from ${donor}`
+      details: `Pity handout from ${donor}${luckInfo.frenzyActive ? ' (2x Server Frenzy)' : ''}`
     });
     const xpResult = await addXp(userId);
 
     let luckNotice = '';
+    if (luckInfo.frenzyActive) {
+      luckNotice += ' <i>(🔥 2x Server Frenzy!)</i>';
+    }
     if (luckInfo.customLuck > 0) {
-      luckNotice = ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
+      luckNotice += ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
     } else if (luckInfo.hasHorseshoe) {
-      luckNotice = ' <i>(🧲 Horseshoe bonus applied!)</i>';
+      luckNotice += ' <i>(🧲 Horseshoe bonus applied!)</i>';
     }
 
     const replyText = `🥺 <b>${donor}</b> took pity on you and gave you <b>${formatCoins(earnedCoins)}</b>!${luckNotice}\n` +

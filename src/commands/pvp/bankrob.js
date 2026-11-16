@@ -46,7 +46,26 @@ async function evaluateHeist(ctx, messageId) {
       ).catch(() => {});
     }
 
-    // Check the Target's active_buffs for vaultlock
+    // Check the Target's active_buffs for Aegis Sovereign Vault (unbreakable) or regular vaultlock
+    const hasAegisVault = await inventoryRepo.hasBuff(targetUserId, 'aegis_vault');
+    if (hasAegisVault) {
+      for (const p of participants) {
+        await userRepo.updateCoins(p.userId, {
+          walletDelta: -2500,
+          sourceCommand: '/bankrob',
+          details: `SWAT bail fine from failed bank heist against @${targetName}'s Aegis Sovereign Vault`
+        });
+      }
+
+      const aegisMsg = `🛡️ <b>AEGIS SOVEREIGN VAULT TRIGGERED! HEIST INSTANTLY FAILED!</b> 🔒\n\n` +
+        `The crew struck an impenetrable <b>🛡️ Aegis Sovereign Vault</b> shielding <b>${sanitizeHtml(targetName)}</b>'s bank!\n` +
+        `💎 The Aegis shield remains <b>100% INTACT &amp; UNBREAKABLE</b>!\n` +
+        `🚨 All <b>${participantCount}</b> robbers were arrested and fined <b>🪙 2,500</b> each!\n\n` +
+        `Busted Crew: ${participants.map(p => sanitizeHtml(p.name)).join(', ')}`;
+
+      return await ctx.api.editMessageText(chatId, Number(messageId), aegisMsg, { parse_mode: 'HTML' }).catch(() => {});
+    }
+
     const hasVaultLock = await inventoryRepo.hasBuff(targetUserId, 'vaultlock');
     if (hasVaultLock) {
       // The lock is consumed upon use/broken during heist
@@ -189,7 +208,25 @@ export const bankrob = {
       return ctx.reply(`🚨 <b>LOCKDOWN:</b> <b>${sanitizeHtml(target.first_name)}</b>'s bank vault is ALREADY under an active heist right now! Wait for the current raid to conclude.`, { parse_mode: 'HTML' });
     }
 
-    // BEFORE starting the 45-second lobby, check the Target's active buffs for vaultlock
+    // BEFORE starting the 45-second lobby, check Aegis Sovereign Vault (unbreakable) and standard vaultlock
+    const targetHasAegisVault = await inventoryRepo.hasBuff(target.user_id, 'aegis_vault');
+    if (targetHasAegisVault) {
+      const fineAmount = Math.min(Number(caller.wallet || 0), 2500);
+      if (fineAmount > 0) {
+        await userRepo.updateCoins(callerId, {
+          walletDelta: -fineAmount,
+          sourceCommand: '/bankrob',
+          details: `Fined for triggering @${target.first_name}'s Aegis Sovereign Vault`
+        });
+      }
+      return ctx.reply(
+        `🛡️ <b>HEIST REPELLED BY AEGIS SOVEREIGN VAULT!</b>\n` +
+        `<b>${sanitizeHtml(target.first_name)}</b>'s bank is protected by an <b>unbreakable Aegis Sovereign Vault</b>!\n` +
+        `🚨 <b>${sanitizeHtml(caller.first_name)}</b> was fined <b>${formatCoins(fineAmount || 2500)}</b>!`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
     const targetHasVaultLock = await inventoryRepo.hasBuff(target.user_id, 'vaultlock');
     if (targetHasVaultLock) {
       // 1. Immediately block the heist & break/consume the shield

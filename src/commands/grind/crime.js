@@ -116,12 +116,13 @@ export const crime = {
     }
 
     // Success!
+    const frenzyMult = luckInfo.frenzyActive ? 2 : 1;
     const baseCoins = randomBetween(targetCrime.coinRange[0], targetCrime.coinRange[1]);
-    const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 120)));
+    const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 120))) * frenzyMult;
     await userRepo.updateCoins(targetUserId, {
       walletDelta: earnedCoins,
       sourceCommand: '/crime',
-      details: `Committed ${targetCrime.name} (${targetCrime.emoji})`
+      details: `Committed ${targetCrime.name} (${targetCrime.emoji})${frenzyMult > 1 ? ' - 2x Server Frenzy' : ''}`
     });
 
     let dropMsg = '';
@@ -136,10 +137,13 @@ export const crime = {
     const xpRes = await addXp(targetUserId, randomBetween(25, 45));
 
     let luckTag = '';
+    if (luckInfo.frenzyActive) {
+      luckTag += ' <i>(🔥 2x Server Frenzy!)</i>';
+    }
     if (luckInfo.customLuck > 0) {
-      luckTag = ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
+      luckTag += ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
     } else if (luckInfo.hasHorseshoe) {
-      luckTag = ' <i>(🧲 Lucky Horseshoe bonus!)</i>';
+      luckTag += ' <i>(🧲 Lucky Horseshoe bonus!)</i>';
     }
 
     const resultMsg = `🚨 <b>CRIME SUCCESSFUL!</b>\n` +

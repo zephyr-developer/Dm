@@ -5,6 +5,9 @@ import shopStockRepo from '../../database/shopStockRepo.js';
 import { findItem, getItem } from '../../config/items.js';
 import { formatCoins, formatTime, sanitizeHtml } from '../../utils/formatters.js';
 
+const MAX_SAFE_QTY = 100_000_000_000; // 100 Billion max stack/transaction quantity
+const MAX_SAFE_INT_BIG = BigInt(Number.MAX_SAFE_INTEGER); // 9,007,199,254,740,991
+
 export const buy = {
   name: 'buy',
   aliases: [],
@@ -75,7 +78,8 @@ export const buy = {
       }
     }
 
-    const currentWallet = Number(user.wallet || 0);
+    const currentWallet = Math.max(0, Math.floor(Number(user.wallet || 0)));
+    const ownedQty = await inventoryRepo.getItem(userId, item.id);
     let quantity = 1;
 
     if (quantityStr === 'all' || quantityStr === 'max') {
@@ -86,6 +90,10 @@ export const buy = {
       if (item.maxOwn === 1 && quantity > 1) {
         quantity = 1;
       }
+      const maxRemainingRoom = Math.max(0, MAX_SAFE_QTY - ownedQty);
+      if (quantity > maxRemainingRoom) {
+        quantity = maxRemainingRoom;
+      }
       if (quantity <= 0) {
         return ctx.reply(
           `💸 <b>Insufficient Funds!</b>\n` +
@@ -95,16 +103,49 @@ export const buy = {
         );
       }
     } else if (quantityStr) {
-      const parsed = parseInt(quantityStr, 10);
-      if (isNaN(parsed) || parsed <= 0) {
+      let bigQty;
+      try {
+        bigQty = BigInt(quantityStr);
+      } catch {
+        return ctx.reply('❌ Quantity must be a valid positive number.');
+      }
+
+      if (bigQty <= 0n) {
         return ctx.reply('❌ Quantity must be at least 1.');
       }
-      quantity = parsed;
+
+      // Overflow-proof BigInt cost check (fast, zero lag even on quadrillion inputs)
+      const totalCostBig = BigInt(item.buyPrice) * bigQty;
+      if (totalCostBig > BigInt(currentWallet) || totalCostBig > MAX_SAFE_INT_BIG) {
+        const qtyDisplay = bigQty <= MAX_SAFE_INT_BIG ? Number(bigQty).toLocaleString('en-US') : bigQty.toString();
+        return ctx.reply(
+          `❌ You cannot afford <b>${qtyDisplay}x ${item.emoji} ${item.name}</b> (or the total cost exceeds the safe wallet limit of 🪙 9 Quadrillion)!`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      const parsedNum = Number(bigQty);
+      if (!Number.isFinite(parsedNum) || parsedNum <= 0) {
+        return ctx.reply('❌ Quantity must be a valid positive number.');
+      }
+      quantity = parsedNum;
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return ctx.reply('❌ Quantity must be at least 1.');
+    }
+
+    // Overflow & stack cap guard (100 Billion max per stack)
+    const totalCostBigInt = BigInt(item.buyPrice) * BigInt(quantity);
+    if (totalCostBigInt > BigInt(currentWallet) || totalCostBigInt > MAX_SAFE_INT_BIG) {
+      return ctx.reply(
+        `❌ You cannot afford <b>${quantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}</b> (or the total cost exceeds the safe wallet limit of 🪙 9 Quadrillion)!`,
+        { parse_mode: 'HTML' }
+      );
     }
 
     if (item.maxOwn === 1) {
-      const ownedQty = await inventoryRepo.getItem(userId, item.id);
-      if (ownedQty >= 1) {
+      if (ownedQty >= 1 || ownedQty + quantity > 1) {
         return ctx.reply(
           `❌ <b>OWNERSHIP LIMIT REACHED!</b> You already own <b>${ownedQty}x ${item.emoji} ${item.name}</b>. Each player can only hold <b>1</b> of this item at a time!`,
           { parse_mode: 'HTML' }
@@ -118,6 +159,13 @@ export const buy = {
       }
     }
 
+    if (quantity > MAX_SAFE_QTY || ownedQty + quantity > MAX_SAFE_QTY) {
+      return ctx.reply(
+        `❌ <b>Stack Limit Exceeded!</b> Maximum single-item stack allowed is <b>${MAX_SAFE_QTY.toLocaleString('en-US')}</b> items (100 Billion).`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
     if (stockInfo && quantity > stockInfo.currentStock) {
       return ctx.reply(
         `❌ Only <b>${stockInfo.currentStock}/${stockInfo.stockLimit}</b>x ${item.emoji} <b>${item.name}</b> left in global stock right now!`,
@@ -125,17 +173,9 @@ export const buy = {
       );
     }
 
-    const totalCost = item.buyPrice * quantity;
-    if (currentWallet < totalCost) {
-      return ctx.reply(
-        `💸 <b>Insufficient Funds!</b>\n` +
-        `To buy <b>${quantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}</b>, you need <b>${formatCoins(totalCost)}</b>.\n` +
-        `👛 Your wallet balance: <b>${formatCoins(currentWallet)}</b>`,
-        { parse_mode: 'HTML' }
-      );
-    }
+    const totalCost = Number(totalCostBigInt);
 
-    // Send confirmation prompt (NO deduction yet) — Cancel left, Confirm right
+    // Send confirmation prompt (NO deduction yet) — Cancel LEFT, Confirm RIGHT
     const keyboard = new InlineKeyboard()
       .text('❌ Cancel', `buy:no:${userId}`)
       .text('✅ Confirm', `buy:yes:${item.id}:${quantity}:${userId}`);
@@ -177,46 +217,52 @@ export const buy = {
 
     if (decision === 'yes') {
       const itemId = parts[2];
-      const quantity = parseInt(parts[3], 10);
+      const quantity = Number(parts[3]);
       const item = getItem(itemId);
 
-      if (!item || !item.buyPrice || isNaN(quantity) || quantity <= 0) {
+      if (
+        !item ||
+        !item.buyPrice ||
+        !Number.isSafeInteger(quantity) ||
+        quantity <= 0 ||
+        quantity > MAX_SAFE_QTY
+      ) {
         await ctx.answerCallbackQuery({ text: 'Invalid purchase details.', show_alert: true });
         return ctx.editMessageText('❌ Transaction failed: Invalid item or quantity.').catch(() => {});
       }
 
-      // Re-validate strict 1-per-user ownership cap before locking stock or charging coins
+      const ownedQty = await inventoryRepo.getItem(targetUserId, item.id);
       if (item.maxOwn === 1) {
-        const ownedQty = await inventoryRepo.getItem(targetUserId, item.id);
-        if (ownedQty >= 1) {
+        if (ownedQty >= 1 || ownedQty + quantity > 1) {
           await ctx.answerCallbackQuery({ text: 'Ownership limit reached!', show_alert: true });
           return ctx.editMessageText(
             `❌ <b>OWNERSHIP LIMIT REACHED!</b> You already own <b>${ownedQty}x ${item.emoji} ${item.name}</b>. Each player can only hold <b>1</b> of this item at a time!`,
             { parse_mode: 'HTML' }
           ).catch(() => {});
         }
-        if (quantity > 1) {
-          await ctx.answerCallbackQuery({ text: 'Limit 1x at a time!', show_alert: true });
-          return ctx.editMessageText(
-            `❌ You can only buy <b>1x ${item.emoji} ${item.name}</b> at a time!`,
-            { parse_mode: 'HTML' }
-          ).catch(() => {});
-        }
       }
 
-      // Re-validate current wallet balance before executing transaction
-      const user = await userRepo.getUser(targetUserId);
-      const currentWallet = Number(user?.wallet || 0);
-      const totalCost = item.buyPrice * quantity;
-
-      if (currentWallet < totalCost) {
-        await ctx.answerCallbackQuery({ text: 'Insufficient wallet funds!', show_alert: true });
+      if (ownedQty + quantity > MAX_SAFE_QTY) {
+        await ctx.answerCallbackQuery({ text: 'Stack limit exceeded!', show_alert: true });
         return ctx.editMessageText(
-          `💸 <b>Transaction Failed: Insufficient Funds!</b>\n` +
-          `You need <b>${formatCoins(totalCost)}</b>, but your wallet only has <b>${formatCoins(currentWallet)}</b>.`,
+          `❌ <b>Stack Limit Exceeded!</b> You cannot hold more than <b>${MAX_SAFE_QTY.toLocaleString('en-US')}x</b> of an item.`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
+
+      const user = await userRepo.getUser(targetUserId);
+      const currentWallet = Math.max(0, Math.floor(Number(user?.wallet || 0)));
+      const totalCostBigInt = BigInt(item.buyPrice) * BigInt(quantity);
+
+      if (totalCostBigInt > BigInt(currentWallet) || totalCostBigInt > MAX_SAFE_INT_BIG) {
+        await ctx.answerCallbackQuery({ text: 'Insufficient wallet funds!', show_alert: true });
+        return ctx.editMessageText(
+          `❌ You cannot afford <b>${quantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}</b> (or the total cost exceeds the safe wallet limit of 🪙 9 Quadrillion)!`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+
+      const totalCost = Number(totalCostBigInt);
 
       // Atomically lock & deduct limited global shop stock before taking coins
       if (item.stockLimit) {
@@ -233,19 +279,32 @@ export const buy = {
         }
       }
 
-      const updated = await userRepo.updateCoins(targetUserId, {
-        walletDelta: -totalCost,
-        sourceCommand: '/buy',
-        details: `Bought ${quantity}x ${item.name}`
-      });
-      await inventoryRepo.addItem(targetUserId, item.id, quantity);
-      const newQuantity = await inventoryRepo.getItem(targetUserId, item.id);
+      // Single atomic PostgreSQL transaction: deduct wallet + insert/increment inventory + currency_logs
+      const buyRes = await inventoryRepo.executeAtomicBuy(
+        targetUserId,
+        item.id,
+        quantity,
+        totalCost,
+        `Bought ${quantity}x ${item.name}`
+      );
 
-      await ctx.answerCallbackQuery({ text: `Bought ${quantity}x ${item.name}!` });
+      if (!buyRes.success) {
+        // Return limited stock if atomic wallet deduction failed concurrently
+        if (item.stockLimit) {
+          await shopStockRepo.returnStock(item.id, quantity).catch(() => {});
+        }
+        await ctx.answerCallbackQuery({ text: 'Purchase failed: insufficient funds!', show_alert: true });
+        return ctx.editMessageText(
+          `💸 <b>Transaction Failed:</b> Insufficient wallet funds or invalid transaction.`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+
+      await ctx.answerCallbackQuery({ text: `Bought ${quantity.toLocaleString('en-US')}x ${item.name}!` });
       return ctx.editMessageText(
         `🛒 You bought <b>${quantity.toLocaleString('en-US')}x ${item.name}</b> for <b>🪙 ${totalCost.toLocaleString('en-US')}</b>!\n\n` +
-        `🎒 <b>Now in Backpack:</b> ${newQuantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}\n` +
-        `👛 <b>Remaining Wallet:</b> ${formatCoins(updated.wallet)}`,
+        `🎒 <b>Now in Backpack:</b> ${buyRes.newQuantity.toLocaleString('en-US')}x ${item.emoji} ${item.name}\n` +
+        `👛 <b>Remaining Wallet:</b> ${formatCoins(buyRes.newWallet)}`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
     }

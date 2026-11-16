@@ -172,12 +172,13 @@ export const search = {
     }
 
     // Success! Calculate coins
+    const frenzyMult = luckInfo.frenzyActive ? 2 : 1;
     const baseCoins = randomBetween(location.coinRange[0], location.coinRange[1]);
-    const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 150)));
+    const earnedCoins = Math.floor(baseCoins * (1 + (luckInfo.totalBonus / 150))) * frenzyMult;
     await userRepo.updateCoins(targetUserId, {
       walletDelta: earnedCoins,
       sourceCommand: '/search',
-      details: `Searched ${location.name} (${location.emoji})`
+      details: `Searched ${location.name} (${location.emoji})${frenzyMult > 1 ? ' - 2x Server Frenzy' : ''}`
     });
 
     // Roll for item drop with luck multiplier
@@ -192,10 +193,13 @@ export const search = {
     const xpResult = await addXp(targetUserId);
 
     let luckTag = '';
+    if (luckInfo.frenzyActive) {
+      luckTag += ' <i>(🔥 2x Server Frenzy!)</i>';
+    }
     if (luckInfo.customLuck > 0) {
-      luckTag = ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
+      luckTag += ` <i>(🎲 +${luckInfo.customLuck}% custom luck active!)</i>`;
     } else if (luckInfo.hasHorseshoe) {
-      luckTag = ' <i>(🧲 Lucky Horseshoe bonus!)</i>';
+      luckTag += ' <i>(🧲 Lucky Horseshoe bonus!)</i>';
     }
 
     const resultText = `🔍 You scavenged inside the <b>${location.emoji} ${location.name}</b> and discovered <b>${formatCoins(earnedCoins)}</b>!` +

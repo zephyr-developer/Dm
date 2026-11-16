@@ -176,16 +176,19 @@ export const work = {
       // Set 45-minute base cooldown (halved to 22.5 mins if Premium)
       await cooldownRepo.applyEffectiveCooldown(targetUserId, 'work', 2700);
 
+      const frenzy = await userRepo.getFrenzyEvent().catch(() => ({ isActive: false }));
+      const frenzyMult = frenzy?.isActive ? 2 : 1;
+
       const isCorrect = guess === session.correctEmoji;
       let payout = 0;
       let dropText = '';
 
       if (isCorrect) {
-        payout = job.salary;
+        payout = job.salary * frenzyMult;
         await userRepo.updateCoins(targetUserId, {
           walletDelta: payout,
           sourceCommand: '/work',
-          details: `Shift at ${job.name} (Full Salary)`
+          details: `Shift at ${job.name} (Full Salary${frenzyMult > 1 ? ' - 2x Server Frenzy' : ''})`
         });
         await userRepo.incrementWorkShifts(targetUserId);
 
@@ -198,30 +201,31 @@ export const work = {
         }
       } else {
         // Partial pay for trying
-        payout = Math.floor(job.salary * 0.25);
+        payout = Math.floor(job.salary * 0.25) * frenzyMult;
         await userRepo.updateCoins(targetUserId, {
           walletDelta: payout,
           sourceCommand: '/work',
-          details: `Shift at ${job.name} (Partial Effort)`
+          details: `Shift at ${job.name} (Partial Effort${frenzyMult > 1 ? ' - 2x Server Frenzy' : ''})`
         });
       }
 
       const xpResult = await addXp(targetUserId, isCorrect ? 40 : 15);
+      const frenzyNote = frenzyMult > 1 ? ' 🔥 <i>(2x Server Frenzy!)</i>' : '';
 
       let resultText = '';
       if (isCorrect) {
-        resultText = `✅ <b>EXCELLENT WORK!</b>\n` +
+        resultText = `✅ <b>EXCELLENT WORK!</b>${frenzyNote}\n` +
           `You correctly chose <b>${guess}</b>!\n\n` +
           `🪙 <b>Salary Paid:</b> +${formatCoins(payout)}\n` +
           `⭐ <b>Work Shift Recorded:</b> +1 shift\n` +
-          `⭐ <b>XP Earned:</b> +40 XP` +
+          `⭐ <b>XP Earned:</b> +${xpResult.earnedXp} XP` +
           dropText +
           (xpResult.message ? `\n${xpResult.message}` : '');
       } else {
-        resultText = `❌ <b>OOPS! WRONG EMOJI!</b>\n` +
+        resultText = `❌ <b>OOPS! WRONG EMOJI!</b>${frenzyNote}\n` +
           `The ${session.targetPos} emoji was actually <b>${session.correctEmoji}</b>, but you guessed <b>${guess}</b>.\n\n` +
           `Your boss gave you partial pay for effort: <b>+${formatCoins(payout)}</b>.\n` +
-          `⭐ <b>XP Earned:</b> +15 XP` +
+          `⭐ <b>XP Earned:</b> +${xpResult.earnedXp} XP` +
           (xpResult.message ? `\n${xpResult.message}` : '');
       }
 

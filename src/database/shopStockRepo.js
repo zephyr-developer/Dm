@@ -209,6 +209,39 @@ export const shopStockRepo = {
       results.set(item.id, res);
     }
     return results;
+  },
+
+  /**
+   * Returns sold limited-stock items back onto the global /shop shelf so they never vanish from the economy.
+   */
+  async returnStock(itemId, qty = 1) {
+    const item = getItem(itemId);
+    if (!item || !item.stockLimit) {
+      return null;
+    }
+
+    const addQty = Math.max(0, Math.floor(Number(qty || 0)));
+    if (addQty <= 0) return null;
+
+    const nextResetAt = Date.now() + getPeriodDurationMs(item);
+    const res = await query(
+      `INSERT INTO shop_stock (item_id, current_stock, next_reset_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (item_id) DO UPDATE
+       SET current_stock = shop_stock.current_stock + $2
+       RETURNING *;`,
+      [item.id, addQty, nextResetAt]
+    );
+
+    const row = res.rows[0];
+    return {
+      limited: true,
+      itemId: item.id,
+      currentStock: Number(row?.current_stock ?? addQty),
+      stockLimit: item.stockLimit,
+      nextResetAt: Number(row?.next_reset_at ?? nextResetAt),
+      stockPeriod: item.stockPeriod || 'daily'
+    };
   }
 };
 
