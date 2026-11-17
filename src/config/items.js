@@ -306,6 +306,20 @@ export const items = {
     stockPeriod: 'weekly',
     description: "MJune's dazzling signature necklace. Kept after Prestige! (Limited: 1 per week)"
   },
+  mjbra: {
+    id: 'mjbra',
+    name: "MJune's Bra",
+    emoji: '📿',
+    aliases: ['bra'],
+    buyPrice: 200000000000,
+    sellPrice: 2,
+    type: 'collectible',
+    prestigeKeep: true,
+    maxOwn: 1,
+    stockLimit: 1,
+    stockPeriod: 'weekly',
+    description: "MJune's dazzling worn bra. Kept after Prestige! (Limited: 1 per week)"
+  },
   gtkcondom: {
     id: 'gtkcondom',
     name: 'GTK Brand Condom',
