@@ -308,8 +308,8 @@ export const items = {
   },
   mjbra: {
     id: 'mjbra',
-    name: "MJune's Bra",
-    emoji: '📿',
+    name: "MJune's Bra （ ͜.人 ͜.）",
+    emoji: '👙',
     aliases: ['bra'],
     buyPrice: 200000000000,
     sellPrice: 2,
